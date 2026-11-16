@@ -16,3 +16,4 @@ data/cache/*
 !data/**/.gitkeep
 eval/results/*
 !eval/results/.gitkeep
+data/logs/*

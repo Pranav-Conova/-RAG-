@@ -1,4 +1,0 @@
-== temporal run ==
-docs scanned: 173  prefilter-skipped: 28  LLM calls: 145  cache hits: 15  failures: 0
-relations extracted by kind: {'clarifies': 277, 'rescinds': 5, 'supersedes': 10, 'amends': 7, 'inserts': 120, 'substitutes': 83, 'omits': 48}  dropped (evidence not in text): 92  dropped (self/empty): 0
-elapsed: 910.3s
