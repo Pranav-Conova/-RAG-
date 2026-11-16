@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from datetime import date
 from difflib import SequenceMatcher
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from asof.generation.structured import structured
 from asof.models import Answer, Citation, Hit, Mode
@@ -52,9 +52,23 @@ KIND_LABEL = {
 
 # ---------------------------------------------------------------- structured output
 
+_SOURCE_REF = re.compile(r"\[?\s*(?:s\s*)?(\d+)\s*\]?", re.IGNORECASE)
+
+
 class GenCitation(BaseModel):
     source: int = Field(description="Source number n from [Sn]")
     quote: str = Field(description="Short verbatim quote (under 30 words) copied from that source")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _parse_source(cls, v: object) -> object:
+        """Models often write the marker itself: accept "S2", "[S2]", "s 2" and "2" as 2.
+        Anything else is passed through for pydantic to reject as usual."""
+        if isinstance(v, str):
+            m = _SOURCE_REF.fullmatch(v.strip())
+            if m:
+                return int(m.group(1))
+        return v
 
 
 class GenAnswer(BaseModel):
@@ -141,61 +155,137 @@ def _strip_wrapping(q: str) -> str:
     return q.strip().strip("\"'").strip()
 
 
-def _fuzzy_ratio(needle: str, hay: str) -> float:
-    """Best SequenceMatcher ratio of `needle` against same-sized windows of `hay`."""
+def _best_window(needle: str, hay: str) -> tuple[float, int, int]:
+    """Best SequenceMatcher ratio of `needle` against similar-sized windows of `hay`.
+
+    Returns (ratio, start, end) of the best window in `hay`.
+    """
     n = len(needle)
     if n == 0 or not hay:
-        return 0.0
+        return 0.0, 0, 0
     if len(hay) <= n:
-        return SequenceMatcher(None, needle, hay, autojunk=False).ratio()
+        return SequenceMatcher(None, needle, hay, autojunk=False).ratio(), 0, len(hay)
     step = max(1, n // 8)
-    best, best_pos = 0.0, 0
-    for size in {n, int(n * 0.9), int(n * 1.1)}:
-        if size <= 0:
-            continue
+    sizes = {s for s in (n, int(n * 0.9), int(n * 1.1)) if s > 0}
+    best, best_pos, best_size = 0.0, 0, n
+    for size in sizes:
         for pos in range(0, max(1, len(hay) - size + 1), step):
             sm = SequenceMatcher(None, needle, hay[pos : pos + size], autojunk=False)
             if sm.real_quick_ratio() < best or sm.quick_ratio() < best:
                 continue
             r = sm.ratio()
             if r > best:
-                best, best_pos = r, pos
+                best, best_pos, best_size = r, pos, size
     # Coarse windows can sit up to `step` chars off the best alignment: refine around it.
-    for size in {n, int(n * 0.9), int(n * 1.1)}:
-        for pos in range(max(0, best_pos - step), min(len(hay) - size, best_pos + step) + 1):
+    centre = best_pos
+    for size in sizes:
+        for pos in range(max(0, centre - step), min(len(hay) - size, centre + step) + 1):
             r = SequenceMatcher(None, needle, hay[pos : pos + size], autojunk=False).ratio()
-            best = max(best, r)
-    return best
+            if r > best:
+                best, best_pos, best_size = r, pos, size
+    return best, best_pos, best_pos + best_size
 
 
+# Tokens for the word-level checks: numbers first, so "20per" splits into "20" + "per".
+_TOKEN = re.compile(r"\d+(?:\.\d+)?|\w+")
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
+NEGATIONS = frozenset({"not", "no", "nor", "never", "except", "without", "omitted", "unless"})
+MIN_FRAGMENT_CHARS = 12  # every part of an ellipsis-split quote must be at least this long
+
+
+def _is_word_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def _find_exact(part: str, src: str, start: int = 0) -> int:
+    """End index of the first occurrence of `part` in `src[start:]` on token boundaries, or -1.
+
+    "5 per cent" must not match inside "25 per cent", nor "10" inside "110"."""
+    check_left = _is_word_char(part[0])
+    check_right = _is_word_char(part[-1])
+    i = src.find(part, start)
+    while i != -1:
+        j = i + len(part)
+        if not (check_left and i > 0 and _is_word_char(src[i - 1])) and not (
+            check_right and j < len(src) and _is_word_char(src[j])
+        ):
+            return j
+        i = src.find(part, i + 1)
+    return -1
+
+
+def _window_is_faithful(part: str, window: str) -> bool:
+    """Word-level check of a fuzzy match: the quote may drop, add or misspell ordinary words,
+    but every number in it must be matched (in order) by the same number in the window, and
+    no negation/exception word may be added, dropped or replaced on either side."""
+    q = _TOKEN.findall(part)
+    w = _TOKEN.findall(window)
+    sm = SequenceMatcher(None, q, w, autojunk=False)
+    opcodes = sm.get_opcodes()
+    for k, (tag, i1, i2, j1, j2) in enumerate(opcodes):
+        if tag == "equal":
+            continue
+        q_seg, w_seg = q[i1:i2], w[j1:j2]
+        # Window-only words at either edge are just slack from the window size.
+        if tag == "insert" and (k == 0 or k == len(opcodes) - 1):
+            w_seg = []
+        if any(_NUMBER.fullmatch(t) for t in q_seg):
+            return False  # a quoted number with no identical number in the window
+        if NEGATIONS.intersection(q_seg) or NEGATIONS.intersection(w_seg):
+            return False  # a flipped negation/exception: only an exact match will do
+    return True
+
+
+def _match_part(part: str, src: str, start: int, threshold: float) -> int:
+    """End index in `src` of a match for `part` at or after `start`, or -1."""
+    end = _find_exact(part, src, start)
+    if end != -1:
+        return end
+    if len(part) < MIN_FUZZY_CHARS:
+        return -1
+    hay = src[start:]
+    ratio, w0, w1 = _best_window(part, hay)
+    if ratio < threshold:
+        return -1
+    # Widen the window to whole tokens plus a little slack so that edge words are not cut in
+    # half (a window starting inside "25" must not read as "5").
+    pad = max(1, len(part) // 8)
+    w0, w1 = max(0, w0 - pad), min(len(hay), w1 + pad)
+    while w0 > 0 and _is_word_char(hay[w0 - 1]):
+        w0 -= 1
+    while w1 < len(hay) and _is_word_char(hay[w1]):
+        w1 += 1
+    if not _window_is_faithful(part, hay[w0:w1]):
+        return -1
+    return start + w1
 
 
 def verify_quote(quote: str, source_text: str, threshold: float = FUZZY_THRESHOLD) -> bool:
     """True if `quote` appears in `source_text`, exactly or fuzzily, after normalisation.
 
     Normalisation: NFKC, casefold, curly quotes/dashes unified, whitespace collapsed.
+    Exact: substring match on token boundaries ("5 per cent" does not match "25 per cent").
     Fuzzy: best SequenceMatcher ratio over sliding windows >= `threshold`, only for quotes of
-    at least MIN_FUZZY_CHARS, and only if every number in the quote occurs in the source.
-    Quotes with an ellipsis are split and every part must verify.
+    at least MIN_FUZZY_CHARS, and only if the matched window is faithful (`_window_is_faithful`):
+    every number in the quote appears, in order, in that window, and no negation/exception word
+    (NEGATIONS) differs between quote and window - such quotes must match exactly.
+    Ellipsis ("..." or the ellipsis character): the quote is split into fragments; every
+    fragment must be at least MIN_FRAGMENT_CHARS long (otherwise the whole quote is rejected,
+    since dropping a short fragment such as "not" could flip the meaning), each fragment must
+    verify by the rules above, and the fragments must occur in the source in quote order.
     """
     # NFKC turns the ellipsis character into "...", and curly quotes become ASCII.
     parts = [_strip_wrapping(p) for p in re.split(r"\.{3,}", normalize(quote))]
     parts = [p for p in parts if p]
     if not parts:
         return False
+    if len(parts) > 1 and any(len(p) < MIN_FRAGMENT_CHARS for p in parts):
+        return False
     src = normalize(source_text)
-    src_numbers = set(_NUMBER.findall(src))
+    pos = 0
     for part in parts:
-        if part in src:
-            continue
-        if len(part) < MIN_FUZZY_CHARS:
-            return False
-        # Fuzzy matching tolerates OCR noise and small wording slips, never a changed number:
-        # "10 per cent" must not verify against "20 per cent".
-        if not set(_NUMBER.findall(part)) <= src_numbers:
-            return False
-        if _fuzzy_ratio(part, src) < threshold:
+        pos = _match_part(part, src, pos, threshold)
+        if pos == -1:
             return False
     return True
 

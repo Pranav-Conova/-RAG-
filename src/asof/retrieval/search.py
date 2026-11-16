@@ -9,12 +9,13 @@
   candidate even if neither ranker found it,
 
 fused with reciprocal rank fusion: ``score = sum(1 / (RRF_K + rank))`` over the vector and FTS
-lists, plus ``REF_BOOST`` when the chunk's ``section_ref``, text or document number matches an
-explicit reference.
+lists, plus ``REF_BOOST`` when the chunk's ``section_ref``, ``refs``, text or document number
+matches an explicit reference (exactly or as a sub-provision; see `ref_patterns`).
 
 As-of filter (asof mode): ``chunks.validity @> as_of AND documents.issue_date <= as_of``
-(documents without an issue date, e.g. the Acts, pass the issue-date test). Baseline mode
-passes ``as_of=None``: no date filter at all.
+(documents without an issue date, e.g. the Acts, pass the issue-date test). History questions
+(``in_force=False``) keep only the issue-date test. Baseline mode passes ``as_of=None``: no
+date filter at all.
 """
 
 from __future__ import annotations
@@ -89,31 +90,67 @@ def ref_with_ancestors(refs: Sequence[str]) -> list[str]:
     return out
 
 
-def ref_patterns(refs: Sequence[str]) -> dict[str, list[str]]:
-    """ILIKE patterns for explicit references.
+_BARE_NUMBER = re.compile(r"\d+/\d{4}")  # "notification no. 49/2019": series unknown
+_RATE_SUFFIX = re.compile(r"\s*\(\s*rate\s*\)\s*$", re.I)
 
-    - ``section``: section_ref starts with the ref ("rule 36(4)" matches "rule 36(4)(a)")
-    - ``text``:    the chunk text contains the ref
-    - ``number``:  documents.number starts with the ref ("49/2019" -> "49/2019-Central Tax")
+
+def _regex_escape(s: str) -> str:
+    """Escape all but letters/digits for a Postgres ARE (backslash + non-alnum = literal)."""
+    return re.sub(r"([^0-9A-Za-z])", r"\\\1", s)
+
+
+def number_regex(ref: str) -> str:
+    """Word-bounded Postgres regex (for ``~*``) matching a notification/circular number in text.
+
+    - not preceded by a digit or "/" ("9/2019-Central Tax" must not match "49/2019-..."),
+    - separators are flexible ("49/2019 - Central Tax", "49/2019-Central  Tax"),
+    - not followed by a letter/digit, and for a non-Rate ref not followed by "(Rate)"
+      ("2/2019-Central Tax" must not match "2/2019-Central Tax (Rate)", a different series).
+    """
+    r = ref.strip()
+    rate = _RATE_SUFFIX.search(r)
+    core = r[: rate.start()] if rate else r
+    segments = [
+        r"\s+".join(_regex_escape(w) for w in seg.split())
+        for seg in re.split(r"\s*[-–—]\s*", core)
+    ]
+    body = r"\s*[-–—]\s*".join(segments)
+    if rate:
+        tail = r"\s*\(\s*rate\s*\)"
+    elif _BARE_NUMBER.fullmatch(core):
+        tail = r"(?![0-9])"  # any series: "49/2019" matches "49/2019-Central Tax"
+    else:
+        tail = r"(?![0-9a-z])(?!\s*\(\s*rate\s*\))"
+    return rf"(^|[^0-9/]){body}{tail}"
+
+
+def ref_patterns(refs: Sequence[str]) -> dict[str, list[str]]:
+    """Match patterns for explicit references.
+
+    - ``section``: ILIKE patterns; section_ref equals the ref or continues with "(":
+      "rule 36(4)" matches "rule 36(4)" and "rule 36(4)(a)"; "rule 3" does NOT match "rule 36"
+      or "rule 31A". Chunk text is matched through ``chunks.refs`` (exact canonical refs).
+    - ``number``:  ILIKE patterns for documents.number, i.e. case-insensitive equality
+      ("9/2019-Central Tax" never matches "49/2019-Central Tax" or "9/2019-Central Tax (Rate)");
+      a bare "49/2019" matches any series of that number ("49/2019-%").
+    - ``text``:    Postgres regexes (``~*``) for numbers in chunk text, see `number_regex`.
     """
     section, text, number = [], [], []
     for ref in refs:
-        esc = _like_escape(ref.strip())
-        if not esc:
+        r = ref.strip()
+        if not r:
             continue
-        if re.match(r"(rule|section)\s", ref, re.I):
-            section.append(f"{esc}%")
-            text.append(f"%{esc}%")
+        esc = _like_escape(r)
+        if re.match(r"(rule|section)\s", r, re.I):
+            section.extend([esc, f"{esc}(%"])
         else:
-            number.append(f"{esc}%")
-            text.append(f"%{esc}%")
+            number.append(f"{esc}-%" if _BARE_NUMBER.fullmatch(r) else esc)
+            text.append(number_regex(r))
     return {"section": section, "text": text, "number": number}
 
 
-_DATE_FILTER = (
-    "c.validity @> %(as_of)s::date "
-    "AND coalesce(d.issue_date, '-infinity'::date) <= %(as_of)s::date"
-)
+_ISSUED_FILTER = "coalesce(d.issue_date, '-infinity'::date) <= %(as_of)s::date"
+_DATE_FILTER = f"c.validity @> %(as_of)s::date AND {_ISSUED_FILTER}"
 
 _HIT_COLUMNS = """
   c.id, c.doc_id, d.kind, d.number,
@@ -124,14 +161,16 @@ _HIT_COLUMNS = """
 
 _REF_MATCH = (
     "(c.section_ref ILIKE ANY(%(ref_section)s::text[]) "
-    "OR c.text ILIKE ANY(%(ref_text)s::text[]) "
+    "OR c.text ~* ANY(%(ref_text)s::text[]) "
     "OR d.number ILIKE ANY(%(ref_number)s::text[]) "
     "OR c.refs && %(ref_exact)s::text[])"
 )
 
 
-def build_hybrid_sql(*, dated: bool, with_refs: bool) -> str:
-    where = f"AND {_DATE_FILTER}" if dated else ""
+def build_hybrid_sql(*, dated: bool, with_refs: bool, in_force: bool = True) -> str:
+    """`dated`: filter by as_of. `in_force=False` (history questions) keeps only the issue-date
+    test, so text in force before as_of (later superseded) is retrievable too."""
+    where = f"AND {_DATE_FILTER if in_force else _ISSUED_FILTER}" if dated else ""
     refs_cte = ""
     refs_union = ""
     if with_refs:
@@ -217,8 +256,13 @@ def hybrid_search(
     as_of: date | None,
     refs: Sequence[str] = (),
     k: int = 30,
+    in_force: bool = True,
 ) -> list[Hit]:
-    """Vector + full-text candidates fused by RRF, filtered to chunks in force on `as_of`."""
+    """Vector + full-text candidates fused by RRF, filtered to chunks in force on `as_of`.
+
+    `in_force=False` drops the validity test (issue_date <= as_of still applies): history
+    questions need superseded versions as well as the current one.
+    """
     pats = ref_patterns(refs)
     with_refs = any(pats.values())
     params = {
@@ -232,7 +276,7 @@ def hybrid_search(
         # chunks.refs holds every provision a chunk mentions (lower-case canonical form)
         "ref_exact": ref_with_ancestors(refs),
     }
-    sql = build_hybrid_sql(dated=as_of is not None, with_refs=with_refs)
+    sql = build_hybrid_sql(dated=as_of is not None, with_refs=with_refs, in_force=in_force)
     with conn.transaction():
         _tune_hnsw(conn)
         rows = conn.execute(sql, params).fetchall()

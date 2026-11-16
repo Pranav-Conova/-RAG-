@@ -2,7 +2,7 @@
 
 mode "asof" (the system):
     understand -> embed best query -> hybrid_search(as_of, refs) -> rerank top 30 -> top 8
-    -> generate_answer
+    -> generate_answer. History questions search everything issued by as_of (no in-force test).
 mode "baseline" (naive RAG control group for the evaluation):
     no query understanding, embed the raw question, vector_search top 8 with no date filter,
     no rerank -> the same generate_answer. Its plan uses the caller's as_of if given (only to tell
@@ -230,9 +230,14 @@ def ask(
         best_query = plan.search_queries[0] if plan.search_queries else question
         vec = timer.step("embed", lambda: _guard("model", lambda: embedder.embed_query(best_query)))
         fts_text = " ".join([question, *plan.search_queries[:3]])
+        # History questions need superseded versions too: keep issue_date <= as_of but drop the
+        # in-force (validity) test. The plan's as_of still frames the answer.
+        search_as_of = plan.as_of if settings.asof_date_filter else None
+        in_force = plan.question_type != "history"
         with _connection(settings, conn) as c:
             candidates = timer.step("search", lambda: _guard("database", lambda: hybrid_search(
-                c, vec, fts_text, as_of=plan.as_of, refs=plan.refs, k=RETRIEVE_K)))
+                c, vec, fts_text, as_of=search_as_of, refs=plan.refs, k=RETRIEVE_K,
+                in_force=in_force)))
         hits = timer.step("rerank", lambda: apply_rerank(reranker, question, candidates, FINAL_K))
     else:
         plan = QueryPlan(

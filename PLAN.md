@@ -5,6 +5,13 @@
 
 ---
 
+> **Status (2026-11-16):** Phases 0–5 and most of 7 are built; see the README's Results
+> section for AsOf vs baseline numbers. Implementation notes that differ from this plan:
+> the hosted models are NVIDIA Nemotron 3.5 (LLM, embeddings) and an OpenRouter reranker;
+> provision versions only end when their own wording, the whole provision or a parent provision
+> is replaced (proviso insertions/substitutions overlap instead); chunks store every provision
+> they mention (`chunks.refs`) for reference matching.
+
 ## 1. The problem this project solves
 
 Regulatory corpora are **versioned**, but standard RAG treats every chunk as equally "true".
@@ -141,7 +148,7 @@ has a measured number attached. That results table is the centrepiece of the por
   `asof smoke`, FastAPI `/health` + `/ready`, GitHub Actions with a pgvector service.
 - **Done when:** `asof smoke` passes with your key and CI is green.
 
-### Phase 1 — Corpus + naive baseline (week 1–2)
+### Phase 1 — Corpus + naive baseline (week 1–2) ✅ done (337 docs, 833 chunks)
 - Crawler for notifications, circulars, Act, Rules → `data/raw/` + metadata JSON.
 - Parsing (PyMuPDF → docling for tables → OCR fallback), section-aware chunking
   (split on Section / Rule / para numbering, keep `section_ref`).
@@ -149,7 +156,7 @@ has a measured number attached. That results table is the centrepiece of the por
   as `baseline/` — it is the control group.
 - **Done when:** baseline answers questions end to end; corpus stats logged (docs, pages, OCR %).
 
-### Phase 2 — Evaluation set (week 2) ← do this early
+### Phase 2 — Evaluation set (week 2) ✅ harness + 49 questions (growing)
 ~150 questions in `eval/questions.jsonl`, each with gold answer, gold citations and `as_of`:
 | Type | Example | Count |
 |---|---|---|
@@ -164,7 +171,7 @@ numbers/dates), **temporal accuracy**, citation precision/recall, **stale-source
 (% answers citing a document not in force at `as_of`), correct-abstention rate, latency, cost/query.
 - **Done when:** `uv run python -m eval.run --system baseline` prints the first results row.
 
-### Phase 3 — Temporal layer (week 3–4) ← the novel core
+### Phase 3 — Temporal layer (week 3–4) ✅ done (895 relations, 279 provision versions)
 - **Relation extraction:** for each notification/circular, extract
   `{target, action, effective_date, new_text?, evidence_span}` with `LLM.structured(...)`
   into Pydantic models. Cache each result to `data/cache/` keyed by document hash, so the
@@ -176,7 +183,7 @@ numbers/dates), **temporal accuracy**, citation precision/recall, **stale-source
 - **As-of retrieval:** add the `validity @> as_of` filter.
 - **Done when:** eval shows a clear drop in stale-source rate vs. baseline; Rule 36(4) timeline is correct.
 
-### Phase 4 — Retrieval upgrades (week 5)
+### Phase 4 — Retrieval upgrades (week 5) ✅ done (ablations in eval/ablations)
 - Query understanding (structured output): `as_of` (default today), query type, explicit refs,
   sub-questions for multi-part queries.
 - Hybrid search (vector + Postgres FTS) with RRF; direct ref lookup; graph expansion
@@ -184,7 +191,7 @@ numbers/dates), **temporal accuracy**, citation precision/recall, **stale-source
 - Ablation runs: each component on/off.
 - **Done when:** ablation table shows each component's contribution.
 
-### Phase 5 — Grounded generation, verification, abstention (week 6)
+### Phase 5 — Grounded generation, verification, abstention (week 6) ✅ done
 - Generate with retrieved chunks numbered `[S1]…[Sn]`; the model must cite `[S#]` and include a
   short verbatim quote per claim. Code checks each quote actually appears in that source
   (fuzzy match), which gives exact character spans for UI highlighting.
@@ -198,7 +205,7 @@ numbers/dates), **temporal accuracy**, citation precision/recall, **stale-source
   circular; later > earlier; specific > general) and surface the conflict to the user.
 - **Done when:** a dedicated conflict subset in eval passes.
 
-### Phase 7 — Product + portfolio polish (week 8)
+### Phase 7 — Product + portfolio polish (week 8) 🚧 UI ✅, results ✅, deploy pending
 - FastAPI endpoints: `/ask`, `/provision/{ref}/history`, `/document/{id}`.
 - Streamlit UI: question box + **as-of date picker**, answer with clickable citations,
   provision **timeline** view, amendment **graph** view.

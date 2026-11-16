@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     rerank_model: str = "nvidia/nemotron-3.5-rerank-8b"  # used only when backend is "nim"
     rerank_url: str = ""
 
+    # Ablation switch: False keeps AsOf's pipeline but drops the validity/date filter.
+    asof_date_filter: bool = True
+
     # Local data (downloaded PDFs, parsed JSON, LLM caches); gitignored
     data_dir: str = "data"
 

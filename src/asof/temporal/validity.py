@@ -393,8 +393,12 @@ def resolve_validity(conn) -> dict:
         if pid in gold or pid not in provisions:
             continue
         inst, ref = provisions[pid]
+        # Only a whole replacement/omission of a parent (e.g. all of rule 36) ends this
+        # provision's versions; replacing the parent's Explanation or some words does not.
         closers = [e.date for a in by_instrument[inst] if is_ancestor(provisions[a][1], ref)
-                   for e in events.get(a, []) if e.kind in CLOSING_KINDS and e.date]
+                   for e in events.get(a, [])
+                   if e.kind in CLOSING_KINDS and e.date
+                   and not is_partial(e) and not old_wording(e)]
         for v in build_versions(evs, closers):
             key = (pid, v.lo, v.hi, v.text, v.source_doc_id)
             computed[key] = v

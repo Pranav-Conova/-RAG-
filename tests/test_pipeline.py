@@ -116,7 +116,7 @@ def test_asof_mode_orchestration(settings, no_limit):
     assert emb.queries == ["provisional input tax credit limit rule 36(4)"]  # best query
     params = conn.params[-1]
     assert params["as_of"] == date(2020, 2, 29) and params["k"] == 30
-    assert params["ref_section"] == ["rule 36(4)%"]
+    assert params["ref_section"] == ["rule 36(4)", "rule 36(4)(%"]
     assert "validity @>" in conn.sql[-1]
     assert rr.calls == [("What was the ITC cap under rule 36(4) in February 2020?", 30, 8)]
     assert [h.chunk_id for h in res.hits] == [30, 29, 28, 27, 26, 25, 24, 23]
@@ -223,3 +223,40 @@ def test_clients_are_cached_per_settings(settings, monkeypatch):
 def test_unknown_mode_rejected(settings):
     with pytest.raises(ValueError):
         pipeline.ask("q?", mode="nope", settings=settings)  # type: ignore[arg-type]
+
+
+def test_date_filter_ablation_switch(settings, no_limit):
+    settings.asof_date_filter = False
+    llm = scripted_llm(settings, no_limit, [PLAN, answer(1, "text of chunk 30")], [])
+    conn = FakeConn([row(i) for i in range(1, 31)])
+    res = pipeline.ask("What was the ITC cap under rule 36(4) in February 2020?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+    assert "validity @>" not in conn.sql[-1]  # no date filter in the search SQL
+    assert res.plan.as_of == date(2020, 2, 29)  # the answer is still framed as of the date
+
+
+def test_history_question_searches_superseded_text(settings, no_limit):
+    history_plan = {"question_type": "history",
+                    "search_queries": ["rule 36(4) amendments provisional input tax credit"]}
+    llm = scripted_llm(settings, no_limit, [history_plan, answer(1, "text of chunk 30")], [])
+    conn = FakeConn([row(i) for i in range(1, 31)])
+    res = pipeline.ask("How did the rule 36(4) ITC cap change up to 1 January 2021?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+    assert res.plan.question_type == "history"
+    assert res.plan.as_of == date(2021, 1, 1)  # still frames the answer
+    sql, params = conn.sql[-1], conn.params[-1]
+    assert "validity @>" not in sql  # superseded versions are retrievable
+    assert "d.issue_date, '-infinity'::date) <= %(as_of)s::date" in sql  # nothing from the future
+    assert params["as_of"] == date(2021, 1, 1)
+
+
+def test_history_question_respects_date_filter_ablation(settings, no_limit):
+    settings.asof_date_filter = False
+    history_plan = {"question_type": "history", "search_queries": ["rule 36(4) amendments"]}
+    llm = scripted_llm(settings, no_limit, [history_plan, answer(1, "text of chunk 30")], [])
+    conn = FakeConn([row(i) for i in range(1, 31)])
+    pipeline.ask("How did rule 36(4) change?", conn=conn, settings=settings, today=TODAY,
+                 llm=llm, embedder=FakeEmbedder(), reranker=ReverseReranker())
+    assert "%(as_of)s" not in conn.sql[-1]

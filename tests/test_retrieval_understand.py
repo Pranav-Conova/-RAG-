@@ -64,6 +64,60 @@ def test_dated_document_dates_are_skipped():
     assert not plan.as_of_explicit
 
 
+@pytest.mark.parametrize("question", [
+    "Notification 49/2019-Central Tax was issued on 9 October 2019; what changed in it?",
+    "Notification 49/2019-Central Tax, issued 9 October 2019 - explain it",
+    "The amendment notified on 9.10.2019 - explain it",
+    "A circular published on 2019-10-09 - explain it",
+    "Rule 36(4) notified in October 2019 - explain it",
+])
+def test_issue_dates_are_skipped(question):
+    assert not regex_plan(question, TODAY).as_of_explicit
+
+
+@pytest.mark.parametrize("question", [
+    "Notification 49/2019-Central Tax was issued on 9 October 2019; "
+    "what is the ITC cap under rule 36(4) now?",
+    "Rule 36(4) was inserted w.e.f. 9 October 2019. What is the current ITC cap?",
+    "Rule 36(4) changed on 1 Jan 2020; what applies today?",
+    "What is the ITC cap at present, given the 1 January 2020 amendment?",
+    "Currently, what does rule 36(4) say after the amendment of 9 Oct 2019?",
+])
+def test_now_questions_use_today(question):
+    plan = regex_plan(question, TODAY)
+    assert plan.as_of == TODAY and not plan.as_of_explicit
+    assert plan.question_type in ("current", "history")
+
+
+def test_now_question_example_is_current():
+    plan = regex_plan("Notification 49/2019-Central Tax was issued on 9 October 2019; "
+                      "what is the ITC cap under rule 36(4) now?", TODAY)
+    assert plan.question_type == "current"
+    assert plan.refs == ["49/2019-Central Tax", "rule 36(4)"]
+
+
+def test_now_with_explicit_as_of_cue_keeps_the_date():
+    plan = regex_plan("Was rule 36(4) in force now, i.e. as on 1 Jan 2020?", TODAY)
+    assert plan.as_of == date(2020, 1, 1) and plan.question_type == "point_in_time"
+    plan = regex_plan("Current cap as of February 2020?", TODAY)
+    assert plan.as_of == date(2020, 2, 29)
+
+
+def test_now_question_override_still_wins():
+    plan = regex_plan("What is the ITC cap now?", TODAY, as_of_override=date(2020, 1, 1))
+    assert plan.as_of == date(2020, 1, 1) and plan.as_of_explicit
+
+
+def test_now_question_ignores_llm_background_date(settings, no_limit):
+    llm = LLM(settings, client=openai_client(lambda r: chat_response(
+        '{"question_type": "point_in_time", "search_queries": ["q"], "as_of_date": "2019-10-09"}'
+    )), limiter=no_limit)
+    plan = understand(llm, "Notification 49/2019-Central Tax was issued on 9 October 2019; "
+                           "what is the ITC cap under rule 36(4) now?", TODAY)
+    assert plan.as_of == TODAY and not plan.as_of_explicit
+    assert plan.question_type == "current"
+
+
 def test_cued_date_wins_else_latest():
     assert regex_plan("Notified 1 Jan 2019; what applied as on 5 March 2019?",
                       TODAY).as_of == date(2019, 3, 5)

@@ -317,3 +317,38 @@ def test_chat_thinking_true_sends_no_switch(settings: Settings, no_limit):
 def test_extract_json_repairs_unescaped_inner_quotes():
     out = extract_json('{"answer": "the words "ten per cent" apply", "abstain": false}')
     assert out == {"answer": 'the words "ten per cent" apply', "abstain": False}
+
+
+def test_unrelated_400_does_not_disable_thinking_switch(settings: Settings, no_limit):
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "context length exceeded"}})
+
+    llm = LLM(settings, client=openai_client(handler), limiter=no_limit)
+    with pytest.raises(Exception, match="context length"):
+        llm.chat([{"role": "user", "content": "hi"}])
+    assert llm._thinking_switch_unsupported is False
+
+
+def test_truncated_output_is_retried_with_bigger_budget(settings: Settings, no_limit):
+    budgets: list[int] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        budgets.append(body["max_tokens"])
+        if len(budgets) == 1:
+            return chat_response('{"rule": "36(4)", "perc', finish_reason="length")
+        return chat_response('{"rule": "36(4)", "percent": 10}')
+
+    llm = LLM(settings, client=openai_client(handler), limiter=no_limit)
+    assert llm.structured([{"role": "user", "content": "cap?"}], Cap, max_tokens=100) == Cap(
+        rule="36(4)", percent=10)
+    assert budgets == [100, 200]
+
+
+def test_truncated_chat_raises(settings: Settings, no_limit):
+    from asof.providers.llm import LLMTruncated
+
+    llm = LLM(settings, client=openai_client(lambda r: chat_response("partial", "length")),
+              limiter=no_limit)
+    with pytest.raises(LLMTruncated):
+        llm.chat([{"role": "user", "content": "hi"}])

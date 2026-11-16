@@ -197,3 +197,109 @@ def test_generate_answer_modes_share_prompt_shape(settings, no_limit, mode):
     user = bodies[0]["messages"][-1]["content"]
     assert "[S1] Notification" in user
     assert ("valid 2019-10-09" in user) == (mode == "asof")
+
+
+# ---------- quote verification: changed numbers, negations, ellipses ----------
+
+CAP_SOURCE = (
+    "Input tax credit availed shall not exceed 20 per cent of the eligible credit available "
+    "in respect of invoices uploaded by the suppliers. The conditions and restrictions on such "
+    "credit, including its reversal and the time limit for re-availing it, shall be as per "
+    "rule 10 of these rules."
+)
+
+
+@pytest.mark.parametrize("quote, source", [
+    ("5 per cent", "the amount not exceeding 25 per cent of the tax"),
+    ("10 per cent", "a penalty equal to 110 per cent"),
+    ("per cent of", "the amount not exceeding 25 per cent ofthe tax"),
+])
+def test_verify_exact_needs_token_boundaries(quote, source):
+    assert not verify_quote(quote, source)
+
+
+def test_verify_exact_on_token_boundaries_still_matches():
+    assert verify_quote("25 per cent", "the amount not exceeding 25 per cent of the tax")
+    assert verify_quote("(4) input tax", SOURCE)  # quote starting with punctuation
+    assert verify_quote("110 per cent", "a penalty equal to 110 per cent")
+
+
+def test_verify_fuzzy_rejects_number_found_elsewhere_in_source():
+    # "10" does occur in the source ("rule 10"), but not in the window the quote matched.
+    assert not verify_quote("shall not exceed 10 per cent of the eligible credit", CAP_SOURCE)
+    assert verify_quote("shall not exceed 20 per cent of the eligible credit", CAP_SOURCE)
+
+
+def test_verify_fuzzy_rejects_changed_number_inside_longer_number():
+    src = "the amount of credit shall not exceed 25 per cent of the eligible credit available"
+    assert not verify_quote("credit shall not exceed 5 per cent of the eligible credit", src)
+    assert not verify_quote("credit shall not exceed 2 per cent of the eligible credit", src)
+
+
+def test_verify_fuzzy_keeps_number_order():
+    src = "tax at 18 per cent, reduced to 12 per cent from the appointed date onwards"
+    assert verify_quote("tax at 18 per cent, reduced to 12 per cent from the appointed date", src)
+    assert not verify_quote("tax at 12 per cent, reduced to 18 per cent from the appointed date",
+                            src)
+
+
+def test_verify_fuzzy_rejects_flipped_negation():
+    src = "the input tax credit shall be allowed after the due date of furnishing the return"
+    assert not verify_quote("credit shall not be allowed ... after the due date", src)
+    assert not verify_quote("the input tax credit shall not be allowed after the due date of "
+                            "furnishing the return", src)
+    neg = "the input tax credit shall not be allowed after the due date of furnishing the return"
+    assert not verify_quote("the input tax credit shall be allowed after the due date of "
+                            "furnishing the return", neg)
+    assert not verify_quote("the input tax credit shall be allowed except after the due date of "
+                            "furnishing", src)
+    # the exact negated sentence still verifies
+    assert verify_quote("credit shall not be allowed after the due date", neg)
+
+
+def test_verify_fuzzy_allows_typos_when_negation_unchanged():
+    neg = "the input tax credit shall not be allowed after the due date of furnishing the return"
+    assert verify_quote("the input tax credit shall not be alowed after the due date of "
+                        "furnishing the retrun", neg)
+    assert verify_quote("Input tax credit shall not be allowed after the due-date of furnishing",
+                        neg)
+
+
+def test_verify_ellipsis_rejects_short_fragments():
+    assert not verify_quote("shall ... not ... exceed", SOURCE)
+    assert not verify_quote("Input tax credit to be availed ... not ... 20 per cent.", SOURCE)
+    assert not verify_quote("(4) ... shall not exceed 20 per cent.", SOURCE)
+
+
+def test_verify_ellipsis_fragments_must_be_in_order():
+    assert verify_quote("Input tax credit to be availed … shall not exceed 20 per cent.", SOURCE)
+    assert not verify_quote("shall not exceed 20 per cent. ... Input tax credit to be availed",
+                            SOURCE)
+
+
+def test_verify_whitespace_and_line_break_variants_still_verify():
+    src = "the registered person shall\n   furnish the details of outward supplies\nof goods"
+    assert verify_quote("The registered person shall furnish the details of outward supplies",
+                        src)
+    assert verify_quote("shall furnish the details of outward supplies of goods", src)
+
+
+@pytest.mark.parametrize("raw", [2, "2", "S2", "[S2]", "s 2", " [ s2 ] ", "[2]"])
+def test_gen_citation_accepts_source_markers(raw):
+    assert GenCitation(source=raw, quote="q").source == 2
+
+
+@pytest.mark.parametrize("raw", ["S", "two", "S2a", "[S2, S3]"])
+def test_gen_citation_rejects_garbage_source(raw):
+    with pytest.raises(ValueError):
+        GenCitation(source=raw, quote="q")
+
+
+def test_generate_answer_accepts_string_source_marker(settings, no_limit):
+    llm = fake_llm(settings, no_limit, {
+        "answer": "As of 2020-02-15 the cap was 20 per cent [S1].",
+        "citations": [{"source": "[S1]", "quote": "shall not exceed 20 per cent."}],
+        "abstain": False})
+    ans = generate_answer(llm, "ITC cap?", date(2020, 2, 15), [make_hit()], mode="asof",
+                          today=TODAY)
+    assert ans.citations[0].source == 1 and ans.citations[0].verified and is_grounded(ans)

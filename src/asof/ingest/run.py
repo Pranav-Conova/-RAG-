@@ -207,6 +207,15 @@ def main(argv: list[str] | None = None) -> int:
                     summary["embed.calls"] = embed.calls
                     summary["embed.failures"] = embed.failures
                     summary["embed.rejected_422"] = embed.rejected
+                if summary["docs_loaded"]:
+                    # Loading (re)sets document/chunk validity to [issue_date, open); recompute
+                    # rescissions, provision versions and chunk refs from stored relations so
+                    # superseded text never looks in force between ingest and `asof temporal`.
+                    from asof.temporal.refs import backfill_chunk_refs
+                    from asof.temporal.validity import resolve_validity
+                    summary["refs.updated"] = backfill_chunk_refs(conn)
+                    vstats = resolve_validity(conn)
+                    summary["validity.chunks_updated"] = vstats.get("chunks_updated", 0)
     finally:
         if client:
             client.close()

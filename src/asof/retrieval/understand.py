@@ -16,10 +16,15 @@ Date rules (documented, and tested in tests/test_retrieval_understand.py):
 - A financial year ("FY 2019-20", "financial year 2019-2020") means 31 March of its last year.
   Rationale for "end of period": the user asks about the law during that period, and the end
   of the period sees every instrument issued in it.
-- Dates immediately preceded by "dated" / "dt." describe a document, not the as-of point, and are
-  skipped. Text inside recognised references (e.g. "123/42/2019-GST") is never read as a date.
+- Dates immediately preceded by "dated" / "dt." / "issued" / "notified" / "published" (optionally
+  followed by "on"/"in") describe a document, not the as-of point, and are skipped. Text inside
+  recognised references (e.g. "123/42/2019-GST") is never read as a date.
 - With several dates: the first one preceded by an as-of cue ("as on", "as of", "as at", "on",
   "w.e.f.", "with effect from") wins; otherwise the latest date mentioned.
+- A question about the present ("now", "current(ly)", "today", "at present", "presently") is
+  answered as of ``today`` (type "current", or "history" if it asks about changes) unless some
+  date carries an explicit "as of" / "as on" / "as at" cue: a date in such a question is
+  background ("... was effective from 9 Oct 2019; what is the cap now?"), not the as-of point.
 - Dates after ``today`` are clamped to ``today`` (we cannot know future law).
 - If the LLM proposes a date and the regexes found none, it is used only when it lies between
   2017-07-01 (GST start) and ``today``.
@@ -171,7 +176,12 @@ _ASOF_CUE = re.compile(
     r"(?:\bas\s+(?:on|of|at)|\bon|\bw\.?\s*e\.?\s*f\.?|\bwith\s+effect\s+from)\s*(?:the\s+)?$",
     re.I,
 )
-_DATED_CUE = re.compile(r"(?:\bdated|\bdt\.?)\s*$", re.I)
+_STRONG_ASOF_CUE = re.compile(r"\bas\s+(?:on|of|at)\s*(?:the\s+)?$", re.I)
+_DATED_CUE = re.compile(
+    r"(?:\bdated|\bdt\.?|\bissued|\bnotified|\bpublished)(?:\s+(?:on|in))?\s*(?:the\s+)?$",
+    re.I,
+)
+_NOW = re.compile(r"\b(?:now|current|currently|today|presently|at\s+present)\b", re.I)
 
 
 def _safe_date(y: int, m: int, d: int) -> date | None:
@@ -206,10 +216,12 @@ def _parse(kind: str, g: tuple[str, ...]) -> date | None:
     return None
 
 
-def extract_dates(text: str, skip_spans: list[tuple[int, int]] = ()) -> list[tuple[date, bool]]:
-    """All as-of candidate dates in text order, as (date, preceded_by_as_of_cue)."""
+def _date_candidates(
+    text: str, skip_spans: list[tuple[int, int]] = ()
+) -> list[tuple[int, date, bool, bool]]:
+    """(position, date, preceded_by_as_of_cue, preceded_by_as_of/on/at) in text order."""
     taken: list[tuple[int, int]] = list(skip_spans)
-    found: list[tuple[int, date, bool]] = []
+    found: list[tuple[int, date, bool, bool]] = []
     for kind, pattern in _DATE_PATTERNS:
         for m in pattern.finditer(text):
             if any(m.start() < e and m.end() > s for s, e in taken):
@@ -219,8 +231,21 @@ def extract_dates(text: str, skip_spans: list[tuple[int, int]] = ()) -> list[tup
             prefix = text[max(0, m.start() - 30) : m.start()]
             if d is None or _DATED_CUE.search(prefix):
                 continue
-            found.append((m.start(), d, bool(_ASOF_CUE.search(prefix))))
-    return [(d, cue) for _, d, cue in sorted(found, key=lambda t: t[0])]
+            found.append((m.start(), d, bool(_ASOF_CUE.search(prefix)),
+                          bool(_STRONG_ASOF_CUE.search(prefix))))
+    return sorted(found, key=lambda t: t[0])
+
+
+def extract_dates(text: str, skip_spans: list[tuple[int, int]] = ()) -> list[tuple[date, bool]]:
+    """All as-of candidate dates in text order, as (date, preceded_by_as_of_cue)."""
+    return [(d, cue) for _, d, cue, _ in _date_candidates(text, skip_spans)]
+
+
+def asks_about_now(text: str, skip_spans: list[tuple[int, int]] = ()) -> bool:
+    """True when the question is about the present and no date has an explicit as-of cue."""
+    if not _NOW.search(text):
+        return False
+    return not any(strong for *_, strong in _date_candidates(text, skip_spans))
 
 
 def pick_date(candidates: list[tuple[date, bool]]) -> date | None:
@@ -289,7 +314,9 @@ Classify the question and write 1-3 search queries."""
 def regex_plan(question: str, today: date, as_of_override: date | None = None) -> QueryPlan:
     """Plan from regexes only (also the fallback when the LLM is unavailable)."""
     refs, spans = extract_refs(question)
-    detected = pick_date(extract_dates(question, spans))
+    # "... effective from 9 Oct 2019; what is the cap now?": that date is background, not as_of.
+    now = asks_about_now(question, spans)
+    detected = None if now else pick_date(extract_dates(question, spans))
     as_of = as_of_override or detected
     explicit = as_of is not None
     as_of = min(as_of, today) if as_of else today
@@ -330,7 +357,10 @@ def understand(llm, question: str, today: date, as_of_override: date | None = No
     queries = [q.strip() for q in out.search_queries if q and q.strip()][:3]
     if queries:
         updates["search_queries"] = queries
-    if not plan.as_of_explicit and out.as_of_date and GST_START <= out.as_of_date <= today:
+    # A "now"/"current" question stays as of today even if the LLM proposes a background date.
+    now = as_of_override is None and asks_about_now(question, extract_refs(question)[1])
+    if (not plan.as_of_explicit and not now and out.as_of_date
+            and GST_START <= out.as_of_date <= today):
         updates["as_of"] = out.as_of_date
         updates["as_of_explicit"] = True
     final_explicit = updates.get("as_of_explicit", plan.as_of_explicit)
