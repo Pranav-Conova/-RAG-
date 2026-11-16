@@ -9,7 +9,8 @@ services:
     # Keep this in the same region as the database (Neon: AWS ap-southeast-1 / Singapore).
     region: singapore
     buildCommand: pip install .
-    startCommand: uvicorn asof.api.main:app --host 0.0.0.0 --port $PORT
+    # Trust Render's proxy headers so generated canonical/sitemap URLs use https.
+    startCommand: uvicorn asof.api.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
@@ -32,3 +33,6 @@ services:
         sync: false
       - key: OPENROUTER_RERANK_MODEL
         value: nvidia/nemotron-3.5-rerank-8b:free
+      # Optional: your public URL (e.g. https://asof-api.onrender.com/) for canonical links.
+      - key: PUBLIC_BASE_URL
+        sync: false

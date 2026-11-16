@@ -1,0 +1,29 @@
+# AsOf
+
+> AsOf is an open-source, time-aware retrieval-augmented generation (RAG) system for Indian GST law. It answers "what was the rule on date X?" by storing the period each notification, circular and provision was in force, following amendment and supersession chains, and citing the exact source text.
+
+Key facts:
+
+- Domain: Indian Goods and Services Tax (CGST Act 2017, CGST Rules 2017, CBIC Central Tax notifications, CBIC circulars).
+- Core idea: every text chunk has a validity date range `[valid_from, valid_to)`; retrieval uses only text in force on the requested as-of date.
+- Stack: Python 3.11+, FastAPI, PostgreSQL + pgvector (halfvec, HNSW, full-text search, daterange), NVIDIA Nemotron 3.5 models (LLM and embeddings) via the NVIDIA API catalog, Nemotron 3.5 Rerank 8B via OpenRouter with an LLM fallback.
+- Hosting: Render (API) and Neon (database), free tiers, Singapore region.
+- Status: Phase 0 complete (schema, model providers, CLI, API). Ingestion, temporal retrieval and evaluation are in progress. No accuracy results are published yet.
+- Not legal or tax advice.
+
+## Docs
+
+- [README](https://github.com/Pranav-Conova/-RAG-/blob/main/README.md): overview, features and status, FAQ, glossary of technical terms
+- [Architecture and build plan](https://github.com/Pranav-Conova/-RAG-/blob/main/PLAN.md): data model, retrieval query, phases, risks
+- [Configuration template](https://github.com/Pranav-Conova/-RAG-/blob/main/.env.example): all settings and defaults
+
+## Code
+
+- [Database schema](https://github.com/Pranav-Conova/-RAG-/blob/main/src/asof/db/schema.sql): documents, provisions, provision versions, chunks, relations
+- [Model providers](https://github.com/Pranav-Conova/-RAG-/tree/main/src/asof/providers): LLM, embeddings, rerankers, rate limiter
+- [API](https://github.com/Pranav-Conova/-RAG-/blob/main/src/asof/api/main.py): FastAPI app
+
+## Optional
+
+- [Citation metadata](https://github.com/Pranav-Conova/-RAG-/blob/main/CITATION.cff)
+- [Tests](https://github.com/Pranav-Conova/-RAG-/tree/main/tests)

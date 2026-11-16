@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use or reference this software, please cite it as below."
+type: software
+title: "AsOf: Time-Aware RAG for Indian GST Law"
+abstract: >-
+  AsOf is an open-source, time-aware retrieval-augmented generation (RAG) system for
+  Indian GST law. It answers "what was the rule on date X?" by storing a validity date
+  range for every notification, circular and provision, following amendment and
+  supersession chains, and verifying that every cited quote appears in its source.
+authors:
+  - alias: Pranav-Conova
+version: 0.1.0
+repository-code: "https://github.com/Pranav-Conova/-RAG-"
+url: "https://github.com/Pranav-Conova/-RAG-"
+keywords:
+  - retrieval-augmented generation
+  - time-aware RAG
+  - temporal retrieval
+  - legal AI
+  - Indian GST
+  - regulatory compliance
+  - pgvector
+  - hybrid search

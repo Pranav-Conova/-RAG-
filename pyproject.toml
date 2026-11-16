@@ -1,9 +1,42 @@
 [project]
 name = "asof"
 version = "0.1.0"
-description = "Time-aware RAG over Indian GST law: answers 'what was the rule on date X?'"
+description = "AsOf: time-aware (point-in-time) retrieval-augmented generation (RAG) for Indian GST law, with amendment tracking, hybrid search, reranking and citation verification."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Pranav-Conova" }]
+keywords = [
+  "rag",
+  "retrieval-augmented-generation",
+  "time-aware-rag",
+  "temporal-rag",
+  "point-in-time",
+  "legal-ai",
+  "legal-tech",
+  "regtech",
+  "gst",
+  "india",
+  "cbic",
+  "pgvector",
+  "hybrid-search",
+  "reranking",
+  "llm",
+  "fastapi",
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Legal Industry",
+  "Intended Audience :: Science/Research",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Framework :: FastAPI",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Text Processing :: Indexing",
+  "Topic :: Database",
+]
 dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
@@ -26,6 +59,13 @@ ingest = [
 ]
 ui = ["streamlit>=1.38"]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.urls]
+Homepage = "https://github.com/Pranav-Conova/-RAG-"
+Repository = "https://github.com/Pranav-Conova/-RAG-"
+Documentation = "https://github.com/Pranav-Conova/-RAG-#readme"
+Roadmap = "https://github.com/Pranav-Conova/-RAG-/blob/main/PLAN.md"
+Issues = "https://github.com/Pranav-Conova/-RAG-/issues"
 
 [project.scripts]
 asof = "asof.cli:main"

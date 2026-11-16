@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql://asof:asof@localhost:5432/asof"
 
+    # Public URL of the deployed site, e.g. https://asof.onrender.com/ (used for canonical
+    # links, sitemap and llms.txt). Empty = derive from the incoming request.
+    public_base_url: str = ""
+
     @property
     def resolved_rerank_url(self) -> str:
         if self.rerank_url:
