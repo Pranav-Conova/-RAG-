@@ -1,0 +1,18 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# Corpus and caches (large, regenerable)
+data/raw/*
+data/parsed/*
+data/cache/*
+!data/**/.gitkeep
+eval/results/*
+!eval/results/.gitkeep

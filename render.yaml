@@ -1,0 +1,34 @@
+# Render Blueprint. Only the query-time API runs here; ingestion runs on your machine and
+# writes to the same DATABASE_URL. All models are remote (NVIDIA API catalog), so the
+# 512 MB free instance only runs FastAPI + DB/HTTP clients.
+services:
+  - type: web
+    name: asof-api
+    runtime: python
+    plan: free
+    # Keep this in the same region as the database (Neon: AWS ap-southeast-1 / Singapore).
+    region: singapore
+    buildCommand: pip install .
+    startCommand: uvicorn asof.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: LLM_MODEL
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
+      - key: LLM_FAST_MODEL
+        value: nvidia/nemotron-3.5-super-vl-120b-a12b
+      - key: EMBED_MODEL
+        value: nvidia/nemotron-3.5-embed-1b
+      - key: EMBED_DIM
+        value: "1024"
+      - key: RERANK_BACKEND
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_RERANK_MODEL
+        value: nvidia/nemotron-3.5-rerank-8b:free
