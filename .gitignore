@@ -20,3 +20,4 @@ data/logs/*
 !eval/results/summary.md
 !eval/results/summary.json
 eval/ablations/*/*.jsonl
+!eval/results/postfix-partial/

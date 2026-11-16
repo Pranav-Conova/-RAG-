@@ -142,6 +142,12 @@ failure entirely, and retrieval of the right document nearly triples at rank 1.
 - Accuracy is strict text matching of key facts, so correct answers phrased differently can count
   as wrong (the true accuracy of both systems is likely higher).
 - AsOf is slower (query understanding + reranking); latency includes free-tier rate limiting.
+- These numbers come from commit `35f16f5`. A later code review fixed 10 defects (stricter quote
+  verification and reference matching, history questions, date parsing). A re-run on the fixed
+  code was cut short by the NVIDIA free-tier rate limit: AsOf completed 48/49 questions with 59.0%
+  answer accuracy, 48.7% recall@1 and 2.6% stale-source rate (1/38, a history question), but the
+  baseline and ablations did not finish
+  ([partial summary](eval/results/postfix-partial/summary.md)). A full re-run is pending.
 
 ## Features and status
 
@@ -236,8 +242,11 @@ All settings are environment variables (or `.env`). See [`.env.example`](.env.ex
 2. In Render choose **New → Blueprint** and select this repository. [`render.yaml`](render.yaml)
    deploys the API in the Singapore region. Set `NVIDIA_API_KEY`, `OPENROUTER_API_KEY`,
    `DATABASE_URL` and optionally `PUBLIC_BASE_URL`.
-3. Run ingestion from your own machine with `DATABASE_URL` pointing at Neon. Heavy parsing and
-   OCR never run on Render.
+3. Run ingestion from your own machine with `DATABASE_URL` pointing at Neon
+   (`asof ingest`, then `asof temporal`). Heavy parsing and OCR never run on Render.
+   CBIC moved many 2019–2020 notification PDFs; ingestion downloads them from CBIC's
+   tax-information portal instead, and `python scripts/fix_dead_links.py` points the UI's
+   source links at the portal for those documents.
 
 **Free-tier limits:** NVIDIA API catalog about 40 requests/min (varies by model); OpenRouter
 free models 20 requests/min and 50 requests/day (1,000/day after a one-time $10 credit
