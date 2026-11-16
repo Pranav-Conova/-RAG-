@@ -281,3 +281,34 @@ def test_make_reranker_openrouter_wraps_fallback(settings: Settings):
     s = or_settings(settings)
     assert isinstance(make_reranker(s), FallbackReranker)
     assert isinstance(make_reranker(s, fallback=False), OpenRouterReranker)
+
+
+def test_chat_disables_thinking_by_default_and_drops_switch_if_rejected(settings: Settings,
+                                                                      no_limit):
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        bodies.append(body)
+        if "chat_template_kwargs" in body:
+            return httpx.Response(400, json={"error": {"message": "unknown field"}})
+        return chat_response("ok")
+
+    llm = LLM(settings, client=openai_client(handler), limiter=no_limit)
+    assert llm.chat([{"role": "user", "content": "hi"}]) == "ok"
+    assert bodies[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "chat_template_kwargs" not in bodies[1]
+    llm.chat([{"role": "user", "content": "again"}])
+    assert len(bodies) == 3 and "chat_template_kwargs" not in bodies[2]  # remembered
+
+
+def test_chat_thinking_true_sends_no_switch(settings: Settings, no_limit):
+    bodies: list[dict] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(req.content))
+        return chat_response("ok")
+
+    LLM(settings, client=openai_client(handler), limiter=no_limit).chat(
+        [{"role": "user", "content": "hi"}], thinking=True)
+    assert "chat_template_kwargs" not in bodies[0]

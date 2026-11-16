@@ -1,0 +1,83 @@
+{
+  "_comment": "FAKE texts modelled on the shape of CGST amending notifications (rule 36(4)-style chain). Used only by tests; not real law.",
+  "docs": [
+    {
+      "id": 1,
+      "parsed": {
+        "meta": {"kind": "notification", "number": "49/2019-Central Tax", "issue_date": "2019-10-09",
+                 "title": "Seeks to make the Sixth Amendment to the CGST Rules", "url": "https://example.test/49-2019.pdf"},
+        "pages": [{"page": 1, "text": "G.S.R. 000(E).- In exercise of the powers conferred by section 164 of the Central Goods and Services Tax Act, 2017, the Government hereby makes the following rules further to amend the Central Goods and Services Tax Rules, 2017, namely:-\n1. (1) These rules may be called the Central Goods and Services Tax (Sixth Amendment) Rules, 2019.\n(2) They shall come into force on the date of their publication in the Official Gazette.\n2. In the Central Goods and Services Tax Rules, 2017, in rule 36, after sub-rule (3), the following sub-rule shall be inserted, namely:-\n“(4) Input tax credit to be availed by a registered person in respect of invoices not uploaded by the suppliers shall not exceed twenty per cent. of the eligible credit available in respect of invoices uploaded by the suppliers.”."}]
+      },
+      "chunks": [
+        {"id": 101, "section_ref": null, "text": "These rules may be called the Central Goods and Services Tax (Sixth Amendment) Rules, 2019. They shall come into force on the date of their publication in the Official Gazette."},
+        {"id": 102, "section_ref": "rule 36(4)", "text": "in rule 36, after sub-rule (3), the following sub-rule shall be inserted: (4) Input tax credit ... shall not exceed twenty per cent. of the eligible credit"}
+      ],
+      "llm_output": {
+        "relations": [
+          {"kind": "inserts", "target_kind": "rule", "target_ref": "Rule 36 (4)", "effective_date": null,
+           "evidence": "in rule 36, after sub-rule (3), the following sub-rule shall be inserted, namely:- \"(4) Input tax credit to be availed by a registered person in respect of invoices not uploaded by the suppliers shall not exceed twenty per cent. of the eligible credit", "confidence": 0.95}
+        ],
+        "effective_date": "2019-10-09"
+      }
+    },
+    {
+      "id": 2,
+      "parsed": {
+        "meta": {"kind": "notification", "number": "75/2019-Central Tax", "issue_date": "2019-12-26",
+                 "title": "Seeks to make the Eighth Amendment to the CGST Rules", "url": "https://example.test/75-2019.pdf"},
+        "pages": [{"page": 1, "text": "G.S.R. 001(E).- the Government hereby makes the following rules further to amend the Central Goods and Services Tax Rules, 2017, namely:-\n1. (1) These rules may be called the Central Goods and Services Tax (Eighth Amendment) Rules, 2019.\n(2) They shall come into force on the 1st day of January, 2020.\n2. In the Central Goods and Services Tax Rules, 2017, in rule 36, in sub-rule (4), for the words “twenty per cent.”, the words “ten per cent.” shall be substituted."}]
+      },
+      "chunks": [
+        {"id": 201, "section_ref": null, "text": "These rules may be called the Central Goods and Services Tax (Eighth Amendment) Rules, 2019. They shall come into force on the 1st day of January, 2020."},
+        {"id": 202, "section_ref": null, "text": "In the Central Goods and Services Tax Rules, 2017, in rule 36, in sub-rule (4), for the words “twenty per cent.”, the words “ten per cent.” shall be substituted."}
+      ],
+      "llm_output": {
+        "relations": [
+          {"kind": "substitutes", "target_kind": "rule", "target_ref": "sub-rule (4) of rule 36", "effective_date": "2020-01-01",
+           "evidence": "in rule 36, in sub-rule (4), for the words \"twenty per cent.\", the words \"ten per cent.\" shall be substituted", "confidence": 0.95},
+          {"kind": "rescinds", "target_kind": "notification", "target_ref": "No. 99/2018 - Central Tax", "effective_date": null,
+           "evidence": "hereby rescinds notification No. 99/2018-Central Tax", "confidence": 0.9}
+        ],
+        "effective_date": "2020-01-01"
+      }
+    },
+    {
+      "id": 3,
+      "parsed": {
+        "meta": {"kind": "notification", "number": "94/2020-Central Tax", "issue_date": "2020-12-22",
+                 "title": "Seeks to make the Fourteenth Amendment to the CGST Rules", "url": "https://example.test/94-2020.pdf"},
+        "pages": [{"page": 1, "text": "the Government hereby makes the following rules further to amend the Central Goods and Services Tax Rules, 2017, namely:-\n2. In the said rules, in rule 36, in sub-rule (4), with effect from the 1st day of January, 2021, for the words “ten per cent.”, the words “five per cent.” shall be substituted."}]
+      },
+      "chunks": [
+        {"id": 301, "section_ref": null, "text": "In the said rules, in rule 36, in sub-rule (4), with effect from the 1st day of January, 2021, for the words “ten per cent.”, the words “five per cent.” shall be substituted."}
+      ],
+      "llm_output": {
+        "relations": [
+          {"kind": "substitutes", "target_kind": "rule", "target_ref": "rule 36(4)", "effective_date": "2021-01-01",
+           "evidence": "for the words “ten per cent.”, the words “five per cent.” shall be substituted", "confidence": 0.9}
+        ],
+        "effective_date": null
+      }
+    },
+    {
+      "id": 4,
+      "parsed": {
+        "meta": {"kind": "notification", "number": "40/2021-Central Tax", "issue_date": "2021-12-29",
+                 "title": "Seeks to make the amendments to the CGST Rules", "url": "https://example.test/40-2021.pdf"},
+        "pages": [{"page": 1, "text": "(2) Save as otherwise provided, they shall come into force on the 1st day of January, 2022.\n2. In the Central Goods and Services Tax Rules, 2017, in rule 36, sub-rule (4) shall be omitted."}]
+      },
+      "chunks": [
+        {"id": 401, "section_ref": null, "text": "In the Central Goods and Services Tax Rules, 2017, in rule 36, sub-rule (4) shall be omitted."}
+      ],
+      "llm_output": {
+        "relations": [
+          {"kind": "omits", "target_kind": "rule", "target_ref": "rule 36(4)", "effective_date": "2022-01-01",
+           "evidence": "in rule 36, sub-rule (4) shall be omitted", "confidence": 0.95},
+          {"kind": "amends", "target_kind": "rule", "target_ref": "rule 37(1)", "effective_date": "2022-01-01",
+           "evidence": "in rule 37, in sub-rule (1), the words \"hallucinated text\" shall be inserted", "confidence": 0.6}
+        ],
+        "effective_date": "2022-01-01"
+      }
+    }
+  ]
+}

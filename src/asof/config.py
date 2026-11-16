@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     nvidia_api_key: SecretStr = SecretStr("")
     nim_base_url: str = "https://integrate.api.nvidia.com/v1"
     nim_requests_per_minute: int = 35
-    request_timeout_s: float = 90.0
-    max_retries: int = 5
+    request_timeout_s: float = 45.0
+    max_retries: int = 3
 
     # LLMs. NVIDIA retires catalog models often: `asof smoke` checks these are still live.
     llm_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.1
     llm_max_tokens: int = 4096
     llm_guided_json: bool = False
+    # Reasoning ("thinking") mode for Nemotron. Off: ~1 s/call; on: 10-40 s/call.
+    llm_thinking: bool = False
 
     # Embeddings
     embed_model: str = "nvidia/nemotron-3.5-embed-1b"
@@ -45,6 +47,9 @@ class Settings(BaseSettings):
 
     rerank_model: str = "nvidia/nemotron-3.5-rerank-8b"  # used only when backend is "nim"
     rerank_url: str = ""
+
+    # Local data (downloaded PDFs, parsed JSON, LLM caches); gitignored
+    data_dir: str = "data"
 
     # Database
     database_url: str = "postgresql://asof:asof@localhost:5432/asof"

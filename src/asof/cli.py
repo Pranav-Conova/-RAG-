@@ -101,11 +101,57 @@ def cmd_smoke(settings: Settings) -> int:
     return 1 if failures else 0
 
 
+def cmd_ask(argv: list[str]) -> int:
+    from datetime import date
+
+    from asof.pipeline import ask
+
+    p = argparse.ArgumentParser(prog="asof ask")
+    p.add_argument("question")
+    p.add_argument("--as-of", type=date.fromisoformat, default=None, help="YYYY-MM-DD")
+    p.add_argument("--mode", choices=["asof", "baseline"], default="asof")
+    p.add_argument("--json", action="store_true", help="print the full AskResult as JSON")
+    args = p.parse_args(argv)
+
+    res = ask(args.question, as_of=args.as_of, mode=args.mode)
+    if args.json:
+        print(res.model_dump_json(indent=2))
+        return 0
+    print(f"As of {res.answer.as_of} ({res.mode}){' — abstained' if res.answer.abstained else ''}")
+    print(res.answer.text)
+    for c in res.answer.citations:
+        h = res.hits[c.source - 1] if 0 < c.source <= len(res.hits) else None
+        where = f"{h.number} ({h.issue_date})" if h else f"S{c.source}"
+        print(f"  [S{c.source}] {where} {'✓' if c.verified else '✗'} “{c.quote}”")
+    print("timings ms:", {k: round(v) for k, v in res.timings_ms.items()})
+    return 0
+
+
+# Subcommands implemented as modules with their own argparse: `asof ingest --help`, etc.
+PASSTHROUGH = {
+    "ingest": ("asof.ingest.run", "crawl, download, parse, chunk and load CBIC documents"),
+    "temporal": ("asof.temporal.run", "extract amendment relations and resolve validity"),
+    "eval": ("asof.evaluation.run", "run the evaluation (AsOf vs baseline)"),
+    "eval-generate": ("asof.evaluation.generate", "draft grounded eval questions"),
+}
+
+
 def main(argv: list[str] | None = None) -> int:
+    import importlib
+
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in PASSTHROUGH:
+        return importlib.import_module(PASSTHROUGH[argv[0]][0]).main(argv[1:]) or 0
+    if argv and argv[0] == "ask":
+        return cmd_ask(argv[1:])
+
     parser = argparse.ArgumentParser(prog="asof")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("db-init", help="create/upgrade the Postgres schema")
     sub.add_parser("smoke", help="call each configured NVIDIA model once")
+    sub.add_parser("ask", help="ask a question: asof ask \"...\" [--as-of YYYY-MM-DD]")
+    for name, (_, help_text) in PASSTHROUGH.items():
+        sub.add_parser(name, help=help_text, add_help=False)
     args = parser.parse_args(argv)
 
     settings = get_settings()

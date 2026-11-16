@@ -1,7 +1,7 @@
 import json
 from typing import Any, TypeVar
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 from pydantic import BaseModel, ValidationError
 
 from asof.config import Settings
@@ -47,6 +47,8 @@ class LLM:
             max_retries=settings.max_retries,  # SDK backs off on 429 / 5xx
         )
         self.limiter = limiter or shared_limiter(settings.nim_requests_per_minute)
+        # Set when the provider rejects the "no thinking" switch, so we stop sending it.
+        self._thinking_switch_unsupported = False
 
     def chat(
         self,
@@ -56,16 +58,37 @@ class LLM:
         temperature: float | None = None,
         max_tokens: int | None = None,
         extra_body: dict[str, Any] | None = None,
+        thinking: bool | None = None,
     ) -> str:
+        """`thinking=None` uses settings.llm_thinking. Nemotron 3.5 is a reasoning model: with
+        thinking on, calls take 10-40 s and can spend the whole max_tokens budget thinking."""
         model = model or self.settings.llm_model
-        self.limiter.acquire()
-        resp = self.client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore[arg-type]
-            temperature=self.settings.llm_temperature if temperature is None else temperature,
-            max_tokens=max_tokens or self.settings.llm_max_tokens,
-            extra_body=extra_body,
-        )
+        thinking = self.settings.llm_thinking if thinking is None else thinking
+        extra_body = dict(extra_body or {})
+        auto_switch = (not thinking and not self._thinking_switch_unsupported
+                       and "chat_template_kwargs" not in extra_body)
+        if auto_switch:
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        def create(body: dict[str, Any]):
+            self.limiter.acquire()
+            return self.client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                temperature=self.settings.llm_temperature if temperature is None else temperature,
+                max_tokens=max_tokens or self.settings.llm_max_tokens,
+                extra_body=body or None,
+            )
+
+        try:
+            resp = create(extra_body)
+        except BadRequestError:
+            if not auto_switch:
+                raise
+            # Provider/model doesn't accept the switch: remember, retry once without it.
+            self._thinking_switch_unsupported = True
+            extra_body.pop("chat_template_kwargs", None)
+            resp = create(extra_body)
         choice = resp.choices[0]
         content = choice.message.content
         if not content:
@@ -84,6 +107,7 @@ class LLM:
         model: str | None = None,
         retries: int = 1,
         max_tokens: int | None = None,
+        thinking: bool | None = None,
     ) -> T:
         """Return a validated `schema` instance; on bad JSON, show the model its error and retry."""
         json_schema = schema.model_json_schema()
@@ -97,7 +121,7 @@ class LLM:
         last_error: Exception | None = None
         for _ in range(retries + 1):
             raw = self.chat(convo, model=model, temperature=0.0, max_tokens=max_tokens,
-                            extra_body=extra)
+                            extra_body=extra, thinking=thinking)
             try:
                 return schema.model_validate(extract_json(raw))
             except (ValueError, ValidationError) as err:

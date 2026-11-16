@@ -83,6 +83,22 @@ CREATE INDEX IF NOT EXISTS relations_src_idx ON relations (src_doc_id);
 CREATE INDEX IF NOT EXISTS relations_dst_doc_idx ON relations (dst_doc_id);
 CREATE INDEX IF NOT EXISTS relations_dst_prov_idx ON relations (dst_provision_id);
 
+-- v2 (idempotent migrations) -------------------------------------------------------------
+-- Stable document key (DocMeta.key) for idempotent re-ingestion.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS documents_key_idx ON documents (key);
+-- Date the document itself takes effect (may differ from issue_date).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS effective_date DATE;
+-- Relations may point at something not in our corpus (e.g. a 2017 notification): keep the
+-- reference text, resolve to dst_doc_id/dst_provision_id when possible.
+ALTER TABLE relations ADD COLUMN IF NOT EXISTS dst_ref TEXT;
+ALTER TABLE relations ADD COLUMN IF NOT EXISTS dst_kind TEXT;
+ALTER TABLE relations DROP CONSTRAINT IF EXISTS relations_check;
+ALTER TABLE relations DROP CONSTRAINT IF EXISTS relations_target_check;
+ALTER TABLE relations ADD CONSTRAINT relations_target_check
+  CHECK (dst_doc_id IS NOT NULL OR dst_provision_id IS NOT NULL OR dst_ref IS NOT NULL);
+CREATE INDEX IF NOT EXISTS relations_dst_ref_idx ON relations (dst_ref);
+
 -- Supabase exposes the public schema through its auto-generated REST API. RLS with no policies
 -- blocks that API; our app connects as the table owner, which RLS does not apply to.
 -- Harmless on plain Postgres.

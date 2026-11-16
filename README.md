@@ -4,7 +4,7 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![FastAPI](https://img.shields.io/badge/API-FastAPI-009688)
 ![PostgreSQL + pgvector](https://img.shields.io/badge/DB-PostgreSQL%20%2B%20pgvector-336791)
-![Status: Phase 0](https://img.shields.io/badge/status-phase%200%20scaffold-orange)
+![Status: working prototype](https://img.shields.io/badge/status-working%20prototype-yellowgreen)
 
 > **AsOf is an open-source, time-aware retrieval-augmented generation (RAG) system for Indian
 > GST law.** It answers *"what was the rule on date X?"* by storing the period each
@@ -30,7 +30,7 @@
 | **Models** | NVIDIA Nemotron 3.5 (LLM and embeddings, NVIDIA API catalog) and Nemotron 3.5 Rerank 8B (via OpenRouter); all free tier |
 | **Storage** | PostgreSQL + pgvector (vector search, full-text search, date ranges and an amendment graph in one database) |
 | **Hosting** | FastAPI on Render, database on Neon (both free tier, Singapore region) |
-| **Status** | Phase 0 complete (schema, model providers, CLI, API scaffold). Ingestion and temporal retrieval in progress |
+| **Status** | Working end to end: ingestion, temporal layer, hybrid retrieval, grounded answers, web UI and evaluation harness |
 | **Disclaimer** | Portfolio and research project. **Not legal or tax advice.** |
 
 ## The problem: standard RAG answers from outdated law
@@ -113,14 +113,16 @@ LIMIT 20;
 | OpenRouter reranker with automatic LLM-based fallback | ✅ Done |
 | `asof smoke` live check of every model, `asof db-init` schema setup | ✅ Done |
 | FastAPI service with health checks, SEO landing page, `robots.txt`, `sitemap.xml`, `llms.txt` | ✅ Done |
-| CBIC crawler, PDF parsing, OCR, section-aware chunking | 🚧 Phase 1 |
-| Baseline (date-unaware) RAG for comparison | 🚧 Phase 1 |
-| Evaluation set of ~150 dated questions | 🚧 Phase 2 |
-| Amendment graph extraction and validity resolution | 🚧 Phase 3 |
-| Hybrid search, query understanding, graph expansion | 🚧 Phase 4 |
-| Citation verification and abstention | 🚧 Phase 5 |
-| Conflict detection between sources | 🚧 Phase 6 |
-| Web UI with as-of date picker, provision timeline and amendment graph view | 🚧 Phase 7 |
+| CBIC crawler (notifications + circulars, 2019–2022), PDF parsing, OCR fallback, section-aware chunking, embedding loader | ✅ Done |
+| Baseline (date-unaware, vector-only) RAG as a control group | ✅ Done |
+| LLM extraction of amendment relations (amends / substitutes / inserts / omits / rescinds / supersedes / clarifies) with verbatim-evidence checks | ✅ Done |
+| Validity resolution: document rescission/supersession and provision-level version chains | ✅ Done |
+| Query understanding (as-of date, references, question type), hybrid search (vector + full-text + reference boost, RRF), date filter, reranking | ✅ Done |
+| Grounded answers with numbered citations, quote verification and abstention | ✅ Done |
+| `POST /api/ask` and a web UI with as-of date picker and side-by-side AsOf vs baseline comparison | ✅ Done |
+| Evaluation harness (correctness, recall@k, citation precision, stale-source rate, abstention, latency) | ✅ Done |
+| Larger evaluation set (~150 questions) and published ablations | 🚧 Next |
+| Conflict detection between sources, provision timeline view | 🚧 Next |
 
 ## Tech stack
 
@@ -156,8 +158,18 @@ asof db-init
 # 4. Check every model responds
 asof smoke
 
-# 5. Run the API and tests
-uvicorn asof.api.main:app --reload   # http://localhost:8000 and /docs
+# 5. Build the corpus (resumable; downloads ~340 CBIC PDFs, embeds and loads them)
+pip install -e ".[ingest]"
+asof ingest --years 2019-2022
+asof temporal                      # extract amendment relations + resolve validity dates
+
+# 6. Ask questions
+asof ask "What was the provisional ITC limit under rule 36(4) in February 2020?"
+asof ask "..." --mode baseline     # the naive RAG, for comparison
+
+# 7. Run the web app, the evaluation and the tests
+uvicorn asof.api.main:app --reload   # web UI at http://localhost:8000, API docs at /docs
+asof eval --systems asof,baseline    # writes eval/results/summary.md
 pytest
 ```
 
@@ -217,13 +229,13 @@ CITATION.cff             citation metadata
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Setup: schema, model providers, CLI, API, CI | ✅ |
-| 1 | Corpus ingestion and a date-unaware baseline RAG | 🚧 |
-| 2 | Evaluation set: point-in-time, current-law, diff, supersession-trap and unanswerable questions | 🚧 |
-| 3 | Temporal layer: amendment graph, validity resolution, as-of retrieval | 🚧 |
-| 4 | Retrieval upgrades: hybrid search, query understanding, graph expansion, reranking ablations | 🚧 |
-| 5 | Grounded generation, citation verification, abstention | 🚧 |
+| 1 | Corpus ingestion and a date-unaware baseline RAG | ✅ |
+| 2 | Evaluation harness and seed question set (point-in-time, current, history, supersession-trap, unanswerable) | ✅ (set growing) |
+| 3 | Temporal layer: amendment graph, validity resolution, as-of retrieval | ✅ |
+| 4 | Retrieval upgrades: hybrid search, query understanding, reranking | ✅ (ablations next) |
+| 5 | Grounded generation, citation verification, abstention | ✅ |
 | 6 | Conflict detection between sources | 🚧 |
-| 7 | Web UI, deployment and published results (baseline vs AsOf) | 🚧 |
+| 7 | Web UI ✅, deployment and published results | 🚧 |
 
 Details are in [PLAN.md](PLAN.md).
 

@@ -1,10 +1,20 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from datetime import date
+from pathlib import Path
 
-from asof import __version__
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field, field_validator
+
+from asof import __version__, pipeline
 from asof.api import site
 from asof.config import get_settings
 from asof.db import connect
+from asof.models import AskResult, Mode
+
+STATIC_DIR = Path(__file__).parent / "static"
+GST_START = date(2017, 7, 1)
 
 app = FastAPI(
     title=f"{site.NAME}: {site.TAGLINE}",
@@ -14,8 +24,12 @@ app = FastAPI(
     openapi_tags=[
         {"name": "site", "description": "Public landing page and crawler files."},
         {"name": "ops", "description": "Health and readiness checks."},
+        {"name": "ask", "description": "Point-in-time question answering with citations."},
     ],
 )
+
+STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def _base_url(request: Request) -> str:
@@ -70,3 +84,54 @@ def ready() -> dict:
             else s.rerank_backend,
         },
     }
+
+
+# ---------------------------------------------------------------- question answering
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=500,
+                          examples=["What was the ITC cap under rule 36(4) in February 2020?"])
+    as_of: date | None = Field(
+        default=None, description="Answer as the law stood on this date (default: the date in "
+        "the question, else today). Must be between 2017-07-01 and today.")
+    mode: Mode = Field(default="asof", description='"asof" (time-aware) or "baseline" '
+                       "(naive RAG control group)")
+
+    @field_validator("question")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if len(v) < 3:
+            raise ValueError("question must have at least 3 non-space characters")
+        return v
+
+
+@app.exception_handler(RequestValidationError)
+async def _bad_request(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Malformed input is a 400 (not FastAPI's default 422)."""
+    errors = [
+        {"loc": list(e.get("loc", [])), "msg": e.get("msg", ""), "type": e.get("type", "")}
+        for e in exc.errors()
+    ]
+    return JSONResponse(status_code=400, content={"detail": errors})
+
+
+@app.post(
+    "/api/ask",
+    response_model=AskResult,
+    tags=["ask"],
+    responses={400: {"description": "Invalid input"},
+               503: {"description": "Database or model provider unavailable"}},
+)
+def api_ask(req: AskRequest) -> AskResult:
+    """Answer a GST question as the law stood on a date, with verified citations."""
+    today = date.today()
+    if req.as_of is not None and not GST_START <= req.as_of <= today:
+        raise HTTPException(
+            400, f"as_of must be between {GST_START.isoformat()} and {today.isoformat()}")
+    try:
+        return pipeline.ask(req.question, as_of=req.as_of, mode=req.mode, today=today)
+    except pipeline.ServiceUnavailable as err:
+        what = "The database" if err.component == "database" else "The language model service"
+        raise HTTPException(
+            503, f"{what} is unavailable right now; please try again shortly.") from err
