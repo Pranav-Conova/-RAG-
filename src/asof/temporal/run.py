@@ -96,7 +96,9 @@ def main(argv: list[str] | None = None) -> int:
 
     vstats = None
     if conn is not None and not args.only_extract:
+        from asof.temporal.refs import backfill_chunk_refs
         from asof.temporal.validity import resolve_validity
+        print(f"chunk refs updated: {backfill_chunk_refs(conn)}")
         vstats = resolve_validity(conn)
 
     print("== temporal run ==")

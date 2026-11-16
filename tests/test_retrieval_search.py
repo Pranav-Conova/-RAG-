@@ -129,3 +129,10 @@ def test_vector_search_has_no_filters():
     sql, params = conn.calls[-1]
     assert "validity" not in sql.split("FROM")[-1] and "@@" not in sql
     assert params["k"] == 8 and hits[0].number == "123/42/2019-GST"
+
+
+def test_ref_with_ancestors():
+    from asof.retrieval.search import ref_with_ancestors
+
+    assert ref_with_ancestors(["rule 9(2)(a)", "49/2019-Central Tax", "Section 16(4)"]) == [
+        "rule 9(2)(a)", "rule 9(2)", "rule 9", "section 16(4)", "section 16"]

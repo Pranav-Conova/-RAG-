@@ -39,7 +39,7 @@ def test_build_keeps_only_verbatim_distinguishing_facts():
     assert v1["gold_doc_numbers"] == ["B/2019-Central Tax"]
 
     v2 = by_id["t-rule-36-4-2"]
-    assert v2["type"] == "current" and v2["must_contain"] == []
+    assert v2["type"] == "point_in_time" and v2["must_contain"] == []
     assert set(v2["must_not_contain"]) == {"twenty per cent", "ten per cent"}
 
 
@@ -57,3 +57,36 @@ def test_build_drops_non_verbatim_or_shared_facts():
 def test_build_requires_date_placeholder():
     prop = mtq.Proposal(question_template="What did rule 36(4) provide?", facts=[])
     assert mtq.build(CHAIN, prop, today=date(2026, 11, 16)) == []
+
+
+def test_overlapping_versions_are_not_stale():
+    chain = {
+        "instrument": "cgst_rules", "ref": "rule 36(4)",
+        "versions": [
+            {"text": "shall not exceed five per cent", "from": date(2021, 1, 1),
+             "to": date(2022, 1, 1), "doc": "A"},
+            {"text": "Provided further that the condition applies cumulatively",
+             "from": date(2021, 5, 1), "to": date(2022, 1, 1), "doc": "B"},
+            {"text": "credit only if furnished in GSTR-2B", "from": date(2022, 1, 1),
+             "to": None, "doc": "C"},
+        ],
+    }
+    prop = mtq.Proposal(question_template="What did rule 36(4) provide on {date}?", facts=[
+        mtq.VersionFact(version=0, key_fact="five per cent"),
+        mtq.VersionFact(version=1, key_fact="applies cumulatively"),
+        mtq.VersionFact(version=2, key_fact="GSTR-2B"),
+    ])
+    by_id = {q["id"]: q for q in mtq.build(chain, prop, today=date(2022, 12, 31))}
+    # versions 0 and 1 overlap, so questions about them would be ambiguous: skipped
+    assert set(by_id) == {"t-rule-36-4-2"}
+    assert set(by_id["t-rule-36-4-2"]["must_not_contain"]) == {"five per cent",
+                                                               "applies cumulatively"}
+    assert by_id["t-rule-36-4-2"]["as_of"] <= "2022-12-31"
+
+
+def test_good_fact_rejects_instruction_wording():
+    assert mtq.good_fact("five per cent")
+    assert mtq.good_fact("within a period of thirty days")
+    for bad in ["after rule 88A", "or sub-rule (2A) shall be inserted", "Provided that",
+                "omitted", "in rule 36, in sub-rule (4)"]:
+        assert not mtq.good_fact(bad), bad

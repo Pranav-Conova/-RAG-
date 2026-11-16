@@ -205,3 +205,12 @@ def test_score_and_aggregate():
     assert set(by_type) == {"point_in_time", "unanswerable"}
     assert by_type["unanswerable"]["n_errors"] == 1
     assert by_type["unanswerable"]["answer_accuracy"]["value"] is None
+
+
+def test_contains_fact_accepts_alternative_phrasings():
+    from asof.evaluation.metrics import contains_fact
+
+    fact = "one crore and fifty lakh || 1.5 crore"
+    assert contains_fact("The limit was Rs 1.5 crore.", fact)
+    assert contains_fact("did not exceed one crore and fifty lakh rupees", fact)
+    assert not contains_fact("the limit was 75 lakh", fact)

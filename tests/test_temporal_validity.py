@@ -189,9 +189,11 @@ def test_insertion_does_not_end_earlier_wording():
     ]
     vs = build_versions(evs)
     by_doc = {v.source_doc_id: (v.lo, v.hi) for v in vs}
-    # 6's evidence has no 'for the words' -> it substitutes the whole unit -> closes all live
-    assert by_doc[3] == (D(2021, 1, 1), D(2021, 6, 1))
-    assert by_doc[5] == (D(2021, 5, 1), D(2021, 6, 1))
+    # 6 substitutes only "the second proviso" (a sub-unit), so it must not end the
+    # "five per cent." wording; the replaced proviso's version may overlap (conservative:
+    # an extra in-force passage is better than losing the one that answers the question).
+    assert by_doc[3] == (D(2021, 1, 1), None)
+    assert by_doc[5] == (D(2021, 5, 1), None)
     # 7 replaces exactly the wording 6 introduced
     assert by_doc[6] == (D(2021, 6, 1), D(2021, 9, 1))
     assert by_doc[7] == (D(2021, 9, 1), None)
@@ -217,3 +219,43 @@ def test_partial_omission_and_reinsertion():
     assert vs[3].text is not None             # a partial omission still has text
     assert (vs[4].text, vs[4].lo, vs[4].hi) == (None, D(2021, 1, 1), D(2022, 1, 1))
     assert vs[5].hi is None
+
+
+def test_partial_substitution_of_a_proviso_keeps_earlier_versions():
+    """27/2021-style: replacing a proviso must not end the 'five per cent' version."""
+    from asof.temporal.validity import Event, build_versions, is_partial
+
+    D = date
+    events = [
+        Event(1, 1, "substitutes", D(2021, 1, 1),
+              'in sub-rule (4), for the words "ten per cent.", the words "five per cent." '
+              "shall be substituted", D(2020, 12, 22)),
+        Event(2, 2, "inserts", D(2021, 5, 1),
+              'after the first proviso, the following proviso shall be inserted, namely:- '
+              '"Provided further that ..."', D(2021, 5, 1)),
+        Event(3, 3, "substitutes", D(2021, 6, 1),
+              'in sub-rule (4) of rule 36, for the second proviso, the following proviso shall '
+              'be substituted, namely: - "Provided also that ..."', D(2021, 6, 1)),
+        Event(4, 4, "substitutes", D(2022, 1, 1),
+              'in rule 36, for sub-rule (4), the following sub-rule shall be substituted, '
+              'namely:- "(4) No input tax credit shall be availed ... clause (aa) ..."',
+              D(2021, 12, 29)),
+    ]
+    assert is_partial(events[2]) and not is_partial(events[3])  # quote text is ignored
+    v = {x.source_doc_id: x for x in build_versions(events)}
+    assert v[1].lo == D(2021, 1, 1) and v[1].hi == D(2022, 1, 1)  # 5% survives the proviso swap
+    assert v[3].hi == D(2022, 1, 1) and v[4].hi is None
+
+
+def test_partial_omission_of_explanation_is_not_whole_omission():
+    from asof.temporal.validity import Event, build_versions
+
+    D = date
+    events = [
+        Event(1, 1, "inserts", D(2020, 1, 1), 'the following sub-rule shall be inserted, '
+              'namely:- "(5) a new rule"', D(2020, 1, 1)),
+        Event(2, 2, "omits", D(2021, 1, 1), "in sub-rule (5), the Explanation shall be omitted",
+              D(2021, 1, 1)),
+    ]
+    v = {x.source_doc_id: x for x in build_versions(events)}
+    assert v[1].hi is None  # not ended by removing an Explanation

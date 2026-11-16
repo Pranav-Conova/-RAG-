@@ -73,10 +73,14 @@ def _fact_pattern(fact: str) -> re.Pattern[str] | None:
 
 
 def contains_fact(text: str, fact: str, *, normalised: bool = False) -> bool:
-    pat = _fact_pattern(fact)
-    if pat is None:
-        return False
-    return bool(pat.search(text if normalised else normalise(text)))
+    """True if the fact appears. `"a || b"` lists equivalent phrasings: any one counts
+    (e.g. "one crore and fifty lakh || 1.5 crore")."""
+    norm_text = text if normalised else normalise(text)
+    for alt in fact.split("||"):
+        pat = _fact_pattern(alt)
+        if pat is not None and pat.search(norm_text):
+            return True
+    return False
 
 
 def answer_correct(

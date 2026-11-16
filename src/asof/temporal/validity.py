@@ -136,6 +136,32 @@ _OLD_OMIT_RE = re.compile(
 _QUOTE_RE = re.compile(r"\"([^\"]{2,})\"")
 
 
+# A substitution/omission whose operative part (before "namely" or the first quote) targets a
+# sub-unit, e.g. 'for the second proviso, the following proviso shall be substituted' or
+# 'the Explanation shall be omitted', changes only that part: it must not end every earlier
+# version of the provision (27/2021 replacing a proviso of rule 36(4) left the 5% cap in force).
+_PARTIAL_UNIT_RE = re.compile(
+    r"\b(?:provisos?|explanations?|illustrations?|(?:sub-)?clauses?|items?|entr(?:y|ies)"
+    r"|tables?|serial\s+(?:number|no)s?|columns?|headings?|annexures?)\b",
+    re.IGNORECASE)
+
+
+def operative_part(evidence: str) -> str:
+    """The instruction part of an amendment, without the new text it inserts."""
+    ev = clean(evidence or "")
+    cut = len(ev)
+    for marker in ('"', "“", "namely"):
+        i = ev.find(marker)
+        if i != -1:
+            cut = min(cut, i)
+    return ev[:cut]
+
+
+def is_partial(e: Event) -> bool:
+    """True when the amendment targets only a sub-unit (proviso, clause, Explanation...)."""
+    return bool(_PARTIAL_UNIT_RE.search(operative_part(e.evidence or "")))
+
+
 def old_wording(e: Event) -> list[str]:
     """Wording an amendment replaces/removes ([] = it targets the provision as a whole)."""
     ev = clean(e.evidence or "")
@@ -196,7 +222,8 @@ def build_versions(events: Iterable[Event], closers: Iterable[date] = ()) -> lis
                       key=lambda e: (_KIND_PRIORITY.get(e.kind, 9), e.relation_id))
         evidences = list(dict.fromkeys(clean(e.evidence) for e in mine if e.evidence))
         olds = {e.relation_id: old_wording(e) for e in mine}
-        whole_omit = [e for e in mine if e.kind == "omits" and not olds[e.relation_id]]
+        whole_omit = [e for e in mine
+                      if e.kind == "omits" and not olds[e.relation_id] and not is_partial(e)]
         texted = [e for e in mine if e not in whole_omit]
         if texted:
             text_parts = list(dict.fromkeys(clean(e.evidence) for e in texted if e.evidence))
@@ -205,7 +232,8 @@ def build_versions(events: Iterable[Event], closers: Iterable[date] = ()) -> lis
         else:
             text, kind = None, "omits"
         replaces_all = bool(whole_omit) or any(
-            e.kind == "substitutes" and not olds[e.relation_id] for e in mine)
+            e.kind == "substitutes" and not olds[e.relation_id] and not is_partial(e)
+            for e in mine)
         if replaces_all:
             close(d, list(live))
         else:

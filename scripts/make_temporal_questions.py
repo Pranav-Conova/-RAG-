@@ -98,6 +98,19 @@ def propose(llm: LLM, chain: dict) -> Proposal | None:
     return out
 
 
+# Key facts must be substance, not the amending instruction ("shall be inserted", "after rule
+# 88A") or boilerplate ("Provided that"), which an answer about the rule would not contain.
+_INSTRUCTION_RE = re.compile(
+    r"\b(?:inserted|substituted|omitted|namely|said rules?|hereinafter)\b"
+    r"|^(?:provided that|after (?:rule|sub-rule|clause)\b.*|in rule \d+.*)$", re.IGNORECASE)
+
+
+def good_fact(fact: str) -> bool:
+    f = fact.strip().strip(".,;:")
+    multiword_or_code = len(f.split()) >= 2 or any(ch.isdigit() for ch in f)
+    return multiword_or_code and not _INSTRUCTION_RE.search(f)
+
+
 def midpoint(lo: date, hi: date | None, today: date) -> date:
     end = min(hi - timedelta(days=1), today) if hi else today
     return lo + (end - lo) // 2 if end > lo else lo
@@ -117,20 +130,29 @@ def build(chain: dict, prop: Proposal, today: date) -> list[dict]:
             continue
         own = norm(vs[f.version]["text"])
         others = [norm(v["text"]) for j, v in enumerate(vs) if j != f.version]
-        if kf and kf in own and not any(kf in o for o in others):
+        if kf and good_fact(f.key_fact) and kf in own and not any(kf in o for o in others):
             facts[f.version] = f.key_fact
     out = []
     for i, v in enumerate(vs):
         if i not in facts or v["from"] is None:
             continue
         as_of = midpoint(v["from"], v["to"], today)
-        stale = [facts[j] for j in facts if j != i and facts[j] != "omitted"]
-        is_last = v["to"] is None
+        # Stale = facts of versions NOT in force on as_of (versions may overlap, e.g. a
+        # proviso inserted while the main wording stays in force).
+        def in_force(j: int, day: date = as_of) -> bool:
+            lo, hi = vs[j]["from"], vs[j]["to"]
+            return lo is not None and lo <= day and (hi is None or day < hi)
+
+        # Unambiguous questions only: no other version with a key fact may be in force too.
+        if any(in_force(j) for j in facts if j != i):
+            continue
+        stale = [facts[j] for j in facts
+                 if j != i and facts[j] != "omitted" and not in_force(j)]
         out.append({
             "id": f"t-{re.sub(r'[^a-z0-9]+', '-', chain['ref'].lower()).strip('-')}-{i}",
             "question": prop.question_template.replace("{date}", as_of.strftime("%d %B %Y")),
             "as_of": as_of.isoformat(),
-            "type": "point_in_time" if not is_last else "current",
+            "type": "point_in_time",
             "gold_doc_numbers": [v["doc"]] if v["doc"] else [],
             "must_contain": [] if facts[i] == "omitted" else [facts[i]],
             "must_not_contain": stale,
@@ -154,11 +176,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-provisions", type=int, default=25)
     ap.add_argument("--out", default="eval/temporal.jsonl")
+    ap.add_argument("--corpus-end", type=date.fromisoformat, default=date(2022, 12, 31),
+                    help="latest date the corpus can speak for; as-of dates stay before it")
     args = ap.parse_args()
 
     settings = get_settings()
     llm = LLM(settings)
-    today = date.today()
+    today = min(date.today(), args.corpus_end)
     with connect(settings) as conn:
         chains = fetch_chains(conn, args.max_provisions)
     print(f"{len(chains)} provisions with 2+ versions")

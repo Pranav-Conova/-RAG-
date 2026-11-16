@@ -99,6 +99,10 @@ ALTER TABLE relations ADD CONSTRAINT relations_target_check
   CHECK (dst_doc_id IS NOT NULL OR dst_provision_id IS NOT NULL OR dst_ref IS NOT NULL);
 CREATE INDEX IF NOT EXISTS relations_dst_ref_idx ON relations (dst_ref);
 
+-- v3: every provision a chunk mentions (see asof.temporal.refs), for exact reference matching.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS refs TEXT[] NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS chunks_refs_idx ON chunks USING gin (refs);
+
 -- Supabase exposes the public schema through its auto-generated REST API. RLS with no policies
 -- blocks that API; our app connects as the table owner, which RLS does not apply to.
 -- Harmless on plain Postgres.

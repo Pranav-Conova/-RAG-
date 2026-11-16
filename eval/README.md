@@ -40,7 +40,8 @@ both systems:
   (e.g. `94/2020-Central Tax`, `123/42/2019-GST`). Leading zeros, spacing and a
   "Notification No." prefix are ignored when comparing.
 - `must_contain`: short key facts that a correct answer states. Keep them short: a number with
-  its unit, a form name.
+  its unit, a form name. Equivalent phrasings can be joined with `||`, e.g.
+  `"one crore and fifty lakh || 1.5 crore"`; any one of them counts.
 - `must_not_contain`: facts that would show the answer used the wrong period, usually a value
   that only applied later. Do not list a value that a good answer might mention as history.
 

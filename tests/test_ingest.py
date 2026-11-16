@@ -318,3 +318,42 @@ def test_adaptive_embedder_skips_rejected_text() -> None:
     out = emb(["a", "bad", "c", "d", "e"])
     assert out == [[1.0], None, [1.0], [1.0], [1.0]]
     assert emb.rejected == 1
+
+
+def test_download_falls_back_to_tax_portal(tmp_path: Path) -> None:
+    import base64
+    import json as _json
+
+    import httpx
+
+    from asof.ingest.crawl import PoliteClient, TaxPortal, download
+
+    pdf = b"%PDF-1.7 fake"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.endswith("authenticate-token"):
+            return httpx.Response(200, json={"id_token": "tok"})
+        if "fetchNotificationByYearAndCategory" in url:
+            assert request.headers["Authorization1"] == "homeToken tok"
+            rows = [
+                {"id": 7, "notificationNo": "49/2019-Central Tax", "contentLanguage": "ENGLISH"}
+            ]
+            return httpx.Response(200, content=_json.dumps(rows))
+        if url.endswith("/download/7/ENG"):
+            return httpx.Response(200, json={"data": base64.b64encode(pdf).decode()})
+        return httpx.Response(404)
+
+    client = PoliteClient(min_interval_s=0, retries=0)
+    client.client = httpx.Client(transport=httpx.MockTransport(handler))
+    meta = DocMeta(
+        kind="notification",
+        number="49/2019-Central Tax",
+        issue_date=date(2019, 10, 9),
+        title="t",
+        url="https://cbic-gst.gov.in/pdf/central-tax/notfctn-49-central-tax-english-2019.pdf",
+    )
+    counts = download(client, [meta], tmp_path, fallback=TaxPortal(client))
+    assert counts["via_tax_portal"] == 1
+    assert (tmp_path / f"{meta.key}.pdf").read_bytes() == pdf
+    assert meta.pdf_path

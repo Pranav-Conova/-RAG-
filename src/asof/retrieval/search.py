@@ -72,6 +72,23 @@ def _like_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def ref_with_ancestors(refs: Sequence[str]) -> list[str]:
+    """Provision refs plus their parents: "rule 9(2)(a)" -> rule 9(2)(a), rule 9(2), rule 9.
+
+    Amending notifications often say "in rule 9, ... (ii) in sub-rule (2), ...", so the chunk is
+    only reliably tagged with the parent rule; matching parents keeps it in the candidate set.
+    """
+    out: list[str] = []
+    for ref in refs:
+        r = ref.strip().lower()
+        if not re.match(r"(rule|section)\s", r):
+            continue
+        while r and r not in out:
+            out.append(r)
+            r = re.sub(r"\([^()]*\)$", "", r) if r.endswith(")") else ""
+    return out
+
+
 def ref_patterns(refs: Sequence[str]) -> dict[str, list[str]]:
     """ILIKE patterns for explicit references.
 
@@ -108,7 +125,8 @@ _HIT_COLUMNS = """
 _REF_MATCH = (
     "(c.section_ref ILIKE ANY(%(ref_section)s::text[]) "
     "OR c.text ILIKE ANY(%(ref_text)s::text[]) "
-    "OR d.number ILIKE ANY(%(ref_number)s::text[]))"
+    "OR d.number ILIKE ANY(%(ref_number)s::text[]) "
+    "OR c.refs && %(ref_exact)s::text[])"
 )
 
 
@@ -122,7 +140,8 @@ refs AS (
   SELECT c.id, NULL::bigint AS rnk
   FROM chunks c JOIN documents d ON d.id = c.doc_id
   WHERE (c.section_ref ILIKE ANY(%(ref_section)s::text[])
-         OR d.number ILIKE ANY(%(ref_number)s::text[])) {where}
+         OR d.number ILIKE ANY(%(ref_number)s::text[])
+         OR c.refs && %(ref_exact)s::text[]) {where}
   ORDER BY d.issue_date DESC NULLS LAST, c.ord
   LIMIT {CANDIDATES}
 )"""
@@ -210,6 +229,8 @@ def hybrid_search(
         "ref_section": pats["section"],
         "ref_text": pats["text"],
         "ref_number": pats["number"],
+        # chunks.refs holds every provision a chunk mentions (lower-case canonical form)
+        "ref_exact": ref_with_ancestors(refs),
     }
     sql = build_hybrid_sql(dated=as_of is not None, with_refs=with_refs)
     with conn.transaction():
