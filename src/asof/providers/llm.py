@@ -26,8 +26,18 @@ def extract_json(text: str) -> Any:
     start = text.find("{")
     if start == -1:
         raise ValueError("no JSON object found in model output")
-    obj, _ = json.JSONDecoder().raw_decode(text[start:])
-    return obj
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[start:])
+        return obj
+    except json.JSONDecodeError as err:
+        # Models quoting legal text often leave inner quotes unescaped
+        # ('"quote": "for the words "ten per cent" ..."'). Repair instead of failing.
+        from json_repair import repair_json
+
+        repaired = repair_json(text[start:], return_objects=True)
+        if isinstance(repaired, dict) and repaired:
+            return repaired
+        raise ValueError(f"invalid JSON from model: {err}") from err
 
 
 class LLM:

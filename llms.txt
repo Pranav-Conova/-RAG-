@@ -8,7 +8,8 @@ Key facts:
 - Core idea: every text chunk has a validity date range `[valid_from, valid_to)`; retrieval uses only text in force on the requested as-of date.
 - Stack: Python 3.11+, FastAPI, PostgreSQL + pgvector (halfvec, HNSW, full-text search, daterange), NVIDIA Nemotron 3.5 models (LLM and embeddings) via the NVIDIA API catalog, Nemotron 3.5 Rerank 8B via OpenRouter with an LLM fallback.
 - Hosting: Render (API) and Neon (database), free tiers, Singapore region.
-- Status: Phase 0 complete (schema, model providers, CLI, API). Ingestion, temporal retrieval and evaluation are in progress. No accuracy results are published yet.
+- Status: working prototype over 337 CBIC notifications and circulars (2019-2022): ingestion, amendment-relation extraction, validity resolution, date-filtered hybrid search, reranking, grounded answers with verified quotes, web UI.
+- Results (49-question benchmark, vs a standard RAG with the same models): answer accuracy 64.1% vs 38.5%; recall@1 59.0% vs 20.5%; stale-source rate 0% vs 28.6%; abstention accuracy 89.8% vs 69.4%. Small set; 29 questions were generated from AsOf's own extracted version chains.
 - Not legal or tax advice.
 
 ## Docs

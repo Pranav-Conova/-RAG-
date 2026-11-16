@@ -312,3 +312,8 @@ def test_chat_thinking_true_sends_no_switch(settings: Settings, no_limit):
     LLM(settings, client=openai_client(handler), limiter=no_limit).chat(
         [{"role": "user", "content": "hi"}], thinking=True)
     assert "chat_template_kwargs" not in bodies[0]
+
+
+def test_extract_json_repairs_unescaped_inner_quotes():
+    out = extract_json('{"answer": "the words "ten per cent" apply", "abstain": false}')
+    assert out == {"answer": 'the words "ten per cent" apply', "abstain": False}

@@ -17,3 +17,5 @@ data/cache/*
 eval/results/*
 !eval/results/.gitkeep
 data/logs/*
+!eval/results/summary.md
+!eval/results/summary.json

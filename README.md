@@ -11,7 +11,13 @@
 > notification, circular and provision was in force, following amendment and supersession
 > chains, and citing the exact source text.
 
-**Contents:** [Key facts](#key-facts) · [The problem](#the-problem-standard-rag-answers-from-outdated-law) ·
+[![AsOf vs a standard RAG on "What was the provisional ITC limit under rule 36(4)?" as of 15 Feb 2020: AsOf answers 10 per cent (the law on that date), the baseline answers 20 per cent (already amended)](docs/img/compare-crop.png)](docs/img/compare.png)
+
+*Same question, same corpus, same model. As of 15 Feb 2020, **AsOf** answers "10 per cent" and explains the change
+from 20% by Notification 75/2019; the **baseline RAG** answers "20%", which had already been amended. Every quote
+is verified against its source and highlighted.*
+
+**Contents:** [Key facts](#key-facts) · [The problem](#the-problem-standard-rag-answers-from-outdated-law) · [Results](#results-asof-vs-a-standard-rag) ·
 [How it works](#how-asof-works) · [Features](#features-and-status) · [Tech stack](#tech-stack) ·
 [Quick start](#quick-start) · [Configuration](#configuration) · [Deployment](#deploying-to-render) ·
 [Project structure](#project-structure) · [Roadmap](#roadmap) · [FAQ](#faq) ·
@@ -30,6 +36,7 @@
 | **Models** | NVIDIA Nemotron 3.5 (LLM and embeddings, NVIDIA API catalog) and Nemotron 3.5 Rerank 8B (via OpenRouter); all free tier |
 | **Storage** | PostgreSQL + pgvector (vector search, full-text search, date ranges and an amendment graph in one database) |
 | **Hosting** | FastAPI on Render, database on Neon (both free tier, Singapore region) |
+| **Results** | 64% vs 38% answer accuracy and 0% vs 29% stale citations against a standard RAG ([details](#results-asof-vs-a-standard-rag)) |
 | **Status** | Working end to end: ingestion, temporal layer, hybrid retrieval, grounded answers, web UI and evaluation harness |
 | **Disclaimer** | Portfolio and research project. **Not legal or tax advice.** |
 
@@ -103,6 +110,38 @@ WHERE validity @> DATE '2020-02-15'          -- only text in force on the as-of 
 ORDER BY embedding <=> :query_embedding      -- cosine distance (pgvector)
 LIMIT 20;
 ```
+
+## Results: AsOf vs a standard RAG
+
+Same corpus (337 CBIC notifications and circulars, 2019–2022), same LLM, same embeddings. The
+**baseline** is a standard RAG: vector search only, no dates, no reranking. **AsOf** adds query
+understanding, date-filtered hybrid search, reranking and quote verification.
+49 questions ([`eval/benchmark.jsonl`](eval/benchmark.jsonl)); full report in
+[`eval/results/summary.md`](eval/results/summary.md).
+
+| Metric | AsOf | Baseline |
+|---|---|---|
+| **Answer accuracy** (key facts present, no outdated facts) | **64.1%** (25/39) | 38.5% (15/39) |
+| Correct document ranked first (recall@1) | **59.0%** | 20.5% |
+| Correct document in top 5 (recall@5) | **79.5%** | 46.2% |
+| At least one verified citation to the correct document | **76.9%** | 41.0% |
+| **Stale-source rate** (cites a document not in force on the date) — lower is better | **0.0%** (0/39) | 28.6% (10/35) |
+| Correctly answered vs declined (abstention accuracy) | **89.8%** | 69.4% |
+| Median latency | 8.3 s | 3.2 s |
+
+**What this shows:** for date-sensitive legal questions, a standard RAG cites law that was not
+in force on the date asked in more than a quarter of answers; AsOf's validity filter removes that
+failure entirely, and retrieval of the right document nearly triples at rank 1.
+
+**Honest caveats**
+- Small set (49 questions); differences of a few points are noise.
+- 20 questions were hand-written and checked against the source text; 29 were generated from the
+  provision version chains that AsOf's own temporal layer extracted (key facts verified verbatim,
+  ambiguous ones dropped). That second group may favour AsOf; a larger, independently written
+  set is the next step.
+- Accuracy is strict text matching of key facts, so correct answers phrased differently can count
+  as wrong (the true accuracy of both systems is likely higher).
+- AsOf is slower (query understanding + reranking); latency includes free-tier rate limiting.
 
 ## Features and status
 
@@ -208,20 +247,22 @@ purchase); Render free instances sleep when idle, so the first request takes abo
 
 ```
 src/asof/
-  config.py              settings from environment / .env
-  cli.py                 `asof db-init`, `asof smoke`
-  db/schema.sql          tables, date ranges, vector + full-text + GiST indexes
-  db/connection.py       connection, schema init, embedding-model pinning
-  providers/llm.py       chat + validated JSON output (NVIDIA API catalog)
-  providers/embeddings.py  query/passage embeddings
-  providers/rerank.py    OpenRouter, LLM, NVIDIA and no-op rerankers + fallback
-  providers/ratelimit.py sliding-window rate limiter
-  api/main.py            FastAPI app: landing page, crawler files, /health, /ready
-  api/site.py            landing page, FAQ, JSON-LD, robots.txt, sitemap.xml, llms.txt
-tests/                   unit tests (mocked HTTP) + database tests (pgvector)
-PLAN.md                  architecture, data model and phased build plan
-llms.txt                 project summary for AI assistants and answer engines
-CITATION.cff             citation metadata
+  config.py                settings from environment / .env
+  models.py                shared data contracts (DocMeta, Hit, QueryPlan, Answer, AskResult, ...)
+  cli.py                   asof db-init | smoke | ingest | temporal | ask | eval | eval-generate
+  db/schema.sql            tables, date ranges, vector + full-text + GiST + GIN indexes
+  ingest/                  CBIC crawler (+ portal fallback), PDF parsing/OCR, chunking, loader
+  temporal/                relation extraction, reference normalisation, validity resolution
+  retrieval/               query understanding (dates, references), hybrid date-filtered search
+  generation/              grounded answers with numbered citations and quote verification
+  pipeline.py              ask(question, as_of, mode="asof" | "baseline")
+  providers/               NVIDIA LLM + embeddings, rerankers (OpenRouter / LLM), rate limiter
+  evaluation/              question format, metrics, runner, grounded question generator
+  api/                     FastAPI app, landing page + web UI (static/), crawler files
+scripts/make_temporal_questions.py   point-in-time questions from provision version chains
+eval/                      benchmark questions, README, results/summary.md
+tests/                     unit tests (mocked HTTP) + database tests (pgvector)
+PLAN.md                    architecture, data model and phased build plan
 ```
 
 ## Roadmap
@@ -277,9 +318,11 @@ same query. PostgreSQL with pgvector does all four, so a single SQL query can re
 is both relevant and valid on the requested date.
 
 ### How will accuracy be measured?
-With a custom evaluation set of about 150 dated questions, including "supersession trap"
-questions whose most similar passage is outdated, and unanswerable questions. Each phase is
-compared against a date-unaware baseline RAG. Results will be published here when available.
+With a benchmark of dated questions (currently 49: point-in-time, current-law, history,
+"supersession trap" and unanswerable questions), scored for answer accuracy, retrieval recall,
+citation correctness, stale-source rate and abstention, against a date-unaware baseline RAG.
+Current numbers are in [Results](#results-asof-vs-a-standard-rag): 64% vs 38% answer accuracy
+and 0% vs 29% stale-source rate.
 
 ### Can the approach be used for other regulations?
 Yes. The design applies to any versioned rulebook, such as RBI master directions, SEBI

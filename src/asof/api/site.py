@@ -63,10 +63,10 @@ FAQ: list[tuple[str, str]] = [
     ),
     (
         "What is the current status of AsOf?",
-        "The web app answers questions as of a date and can compare AsOf with a baseline "
-        "RAG pipeline side by side. An evaluation harness scores both on a hand-written "
-        "question set (answer correctness, retrieval recall, citation precision, stale-source "
-        "rate and abstention); results are published in the repository as the corpus grows.",
+        "AsOf works end to end over 337 CBIC notifications and circulars from 2019 to 2022. "
+        "On a 49-question benchmark it reached 64% answer accuracy versus 38% for a standard "
+        "RAG, and cited no out-of-date sources versus 29% for the standard RAG. The web app "
+        "can compare both side by side.",
     ),
 ]
 

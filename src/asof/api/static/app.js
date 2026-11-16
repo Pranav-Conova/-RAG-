@@ -381,8 +381,12 @@
     }
     var href = safeUrl(hit.url);
     if (href) {
+      // Documents whose old PDF link died point at the CBIC portal's search page instead.
+      var portal = href.indexOf("taxinformation.cbic.gov.in/content-page/") !== -1;
+      var label = portal ? "Find " + (hit.number || "it") + " on the CBIC portal"
+                         : "Open source PDF";
       actions.appendChild(el("a", { href: href, target: "_blank", rel: "noopener noreferrer" },
-        "Open source PDF", el("span", { class: "visually-hidden", text: " (opens in a new tab)" })));
+        label, el("span", { class: "visually-hidden", text: " (opens in a new tab)" })));
     }
 
     var notes = [];
@@ -690,12 +694,13 @@
     });
   });
 
-  // Prefill from a shared link: /?q=...&as_of=YYYY-MM-DD&compare=1 (does not auto-submit).
+  // Prefill from a shared link: /?q=...&as_of=YYYY-MM-DD&compare=1 (add &run=1 to also submit).
   try {
     var params = new URLSearchParams(window.location.search);
     if (params.get("q")) qEl.value = params.get("q").slice(0, 1000);
     if (isISODate(params.get("as_of"))) dateEl.value = params.get("as_of");
     if (params.get("compare") === "1") cmpEl.checked = true;
+    if (params.get("run") === "1" && qEl.value.trim()) submit();
   } catch (e) { /* ignore */ }
   dateEl.setAttribute("max", "9999-12-31");
 })();
