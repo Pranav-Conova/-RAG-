@@ -18,7 +18,7 @@ from 20% by Notification 75/2019; the **baseline RAG** answers "20%", which had 
 is verified against its source and highlighted.*
 
 **Contents:** [Key facts](#key-facts) · [The problem](#the-problem-standard-rag-answers-from-outdated-law) · [Results](#results-asof-vs-a-standard-rag) ·
-[How it works](#how-asof-works) · [Features](#features-and-status) · [Tech stack](#tech-stack) ·
+[How it works](#how-asof-works-architecture) · [Features](#features-and-status) · [Tech stack](#tech-stack) ·
 [Quick start](#quick-start) · [Configuration](#configuration) · [Deployment](#deploying-to-render) ·
 [Project structure](#project-structure) · [Roadmap](#roadmap) · [FAQ](#faq) ·
 [Glossary](#glossary-of-technical-terms) · [Citation](#how-to-cite)
@@ -61,55 +61,146 @@ sounds right, cites a real document, and is wrong for the date that matters.
 | Conflicting sources | Picks one arbitrarily | Applies precedence: statute > rules > notification > circular; later > earlier |
 | Unsupported claim | Often answers anyway | Verifies citations and abstains when unsupported |
 
-## How AsOf works
+## How AsOf works (architecture)
+
+AsOf has two halves:
+
+1. **An offline build pipeline** (runs on your machine): downloads the law, splits it into
+   passages, works out *which passage was in force when*, and stores everything in PostgreSQL.
+2. **An online question pipeline** (the web app / API): turns a question into a dated search,
+   retrieves only passages in force on that date, and writes an answer whose every quote is
+   checked against the source.
+
+```mermaid
+flowchart TB
+  subgraph BUILD["Offline build: asof ingest, then asof temporal"]
+    direction LR
+    A["1 Crawl CBIC listings<br/>337 PDFs, 2019-2022"] --> B["2 Parse PDFs<br/>PyMuPDF + OCR"]
+    B --> C["3 Chunk by section<br/>~350 words"]
+    C --> D["4 Embed + load<br/>Nemotron embed, 1024-d"]
+    B --> E["5 LLM extracts amendments<br/>verbatim evidence only"]
+    E --> F["6 Resolve validity dates<br/>documents, rule versions, chunks"]
+  end
+  DB[("PostgreSQL + pgvector (Neon)<br/>chunks, documents, relations,<br/>provision versions")]
+  D --> DB
+  F --> DB
+  subgraph ASK["Online: POST /api/ask"]
+    direction LR
+    Q["Question<br/>+ optional date"] --> U["1 Understand<br/>date, rule refs, type"]
+    U --> S["2-3 Hybrid search<br/>in force on that date"]
+    S --> R["4 Rerank<br/>30 to 8 passages"]
+    R --> G["5 Generate answer<br/>numbered citations"]
+    G --> V["6 Verify every quote"]
+    V --> O["Dated answer<br/>+ checked sources"]
+  end
+  DB --> S
+```
+
+### Part 1: building the knowledge base (offline)
+
+| Step | What happens | Code |
+|---|---|---|
+| **1. Crawl** | Reads CBIC's listing pages for Central Tax notifications and GST circulars (2019–2022) and downloads each English PDF politely (1 request/second). 164 notification PDFs had moved, so they are fetched from CBIC's tax-information portal instead. | `ingest/crawl.py` |
+| **2. Parse** | Extracts text page by page with PyMuPDF. Gazette PDFs are bilingual, so lines that are mostly Hindi are dropped. Scanned PDFs go through OCR (RapidOCR). | `ingest/parse.py` |
+| **3. Chunk** | Splits each document into passages of 250–450 words (target 350, 40-word overlap) on paragraph/clause boundaries, never mid-sentence. Each chunk records its main reference (`section_ref`, e.g. `rule 36(4)`) and **every** rule/section it mentions (`refs`). | `ingest/chunk.py`, `temporal/refs.py` |
+| **4. Embed + load** | Each chunk is embedded (NVIDIA `nemotron-3.5-embed-1b`, 1024 numbers, "passage" mode, prefixed with the document number, date and subject) and stored in PostgreSQL with a vector index (HNSW) and a full-text index. | `ingest/load.py` |
+| **5. Extract amendments** | For every document that mentions amending words (*amend, substitute, insert, omit, rescind, supersede, clarify…*), the LLM lists what it changes, e.g. *"75/2019 **substitutes** wording in rule 36(4), effective 2020-01-01"*. Each relation must quote the document verbatim; relations whose quote is not found in the text are thrown away. Results are cached, so re-runs are free. | `temporal/extract.py`, `temporal/store.py` |
+| **6. Resolve validity** | Turns the relations into date ranges (see below) on documents, rule versions and chunks. | `temporal/validity.py` |
+
+**How validity dates are worked out (the core idea).** Every range is half-open
+`[valid_from, valid_to)`; an empty end means "still in force".
+
+- **Documents:** in force from their effective (or issue) date until a later document
+  rescinds or supersedes them.
+- **Rule versions:** all amendments to one rule are put in date order. A version ends only when
+  a later amendment replaces *its* wording, replaces or omits the whole rule, or replaces the
+  parent rule. Adding or swapping a proviso does **not** end the main wording, so versions can
+  overlap (both are law at the same time).
+- **Chunks:** a chunk inherits its document's range, or the range of the rule version it describes.
+
+Result for rule 36(4), straight from the database:
+
+| Version (notification) | In force | What it says |
+|---|---|---|
+| 49/2019-Central Tax | 2019-10-09 → 2020-01-01 | provisional ITC capped at 20 per cent |
+| 75/2019-Central Tax | 2020-01-01 → 2021-01-01 | cap reduced to 10 per cent |
+| 94/2020-Central Tax | 2021-01-01 → 2022-01-01 | cap reduced to 5 per cent |
+| 30/2020, 13/2021, 27/2021 | overlapping, until 2022-01-01 | provisos (cumulative application for certain months) |
+| 40/2021-Central Tax | 2022-01-01 → | whole sub-rule replaced (credit only if it appears in GSTR-2B) |
+
+### Part 2: answering a question (online)
+
+| Step | What happens | Code |
+|---|---|---|
+| **1. Understand** | Finds the **as-of date** (the date picker wins; else a date in the question such as "February 2020" → 2020-02-29; else today), explicit **references** (`rule 36(4)`, `49/2019-Central Tax`, circular numbers) and the **question type** (point-in-time, current, history). Dates after "issued/notified on" are ignored. The LLM writes 1–3 search queries; if it fails, a regex-only plan is used. | `retrieval/understand.py` |
+| **2. Embed** | The best search query is embedded in "query" mode. | `providers/embeddings.py` |
+| **3. Hybrid search** | **One SQL query** gathers three candidate lists of 50: vector similarity (pgvector cosine), keyword match (PostgreSQL full-text) and chunks matching the question's references (`section_ref`, `refs`, document number). They are merged with **reciprocal rank fusion** (k = 60, plus a small boost for reference matches). The **date filter** keeps only chunks whose validity contains the as-of date and whose document was already issued; history questions skip the validity filter but keep the issue-date rule. Returns the top 30. | `retrieval/search.py` |
+| **4. Rerank** | A cross-encoder (`nvidia/nemotron-3.5-rerank-8b` via OpenRouter) rescores the 30 candidates against the question and the best 8 are kept. If OpenRouter fails or its free daily limit is reached, the LLM scores them instead. | `providers/rerank.py` |
+| **5. Generate** | The LLM (`nvidia/nemotron-3.5-super`) gets the 8 passages as numbered sources `[S1]…[S8]`, each with its document number, issue date, validity range and section. It must answer only from them, state the as-of date, cite each claim with `[S#]` plus a short verbatim quote, mention later amendments, or abstain if the sources do not answer. Output is JSON; malformed JSON is repaired and cut-off output is retried with a bigger budget. | `generation/answer.py` |
+| **6. Verify quotes** | Every quote is checked against its source: an exact match on word boundaries after normalising case, spacing and quote marks, or a fuzzy match (≥ 85 %, quotes of 20+ characters) in which **all numbers must line up in order** and no negation (*not, except, omitted…*) may differ. Unverified quotes are flagged in the API and UI. | `generation/answer.py` |
+| **7. Return** | `AskResult`: the interpreted plan, the 8 sources with validity ranges, the answer, each citation with `verified: true/false`, and per-step timings. | `pipeline.py`, `api/main.py` |
+
+**The baseline ("standard RAG") used for comparison** uses the same corpus, embeddings, LLM and
+answer prompt, but: no query understanding, vector search only (top 8), **no date filter** and no
+reranking. Switch to it with `mode: "baseline"` or the *Compare* toggle in the UI.
+
+The date filter at the heart of it (simplified from `retrieval/search.py`):
+
+```sql
+SELECT c.text, d.number, lower(c.validity) AS valid_from, upper(c.validity) AS valid_to
+FROM chunks c JOIN documents d ON d.id = c.doc_id
+WHERE c.validity @> DATE '2020-02-15'              -- in force on the as-of date
+  AND d.issue_date <= DATE '2020-02-15'            -- and already issued
+ORDER BY c.embedding <=> :query_vector             -- cosine distance (pgvector)
+LIMIT 50;                                          -- (+ full-text and reference lists, fused)
+```
+
+### Data model
+
+| Table | One row per | Key columns |
+|---|---|---|
+| `documents` | notification / circular | number, issue date, subject, URL, status (in force / rescinded / superseded), `validity` |
+| `chunks` | passage | text, `embedding halfvec(1024)` (HNSW), `tsv` (full-text, GIN), `section_ref`, `refs[]`, `validity` (GiST) |
+| `relations` | extracted amendment | source document, target document or rule, kind, effective date, evidence quote |
+| `provisions` | rule or section (e.g. `rule 36(4)`) | instrument, reference |
+| `provision_versions` | version of a rule | text, `validity`, source document |
+| `index_meta` | setting | embedding model and size the index was built with (prevents mixing) |
+
+### Where each part runs
 
 ```mermaid
 flowchart LR
-  subgraph Ingestion
-    A[CBIC crawler] --> B[PDF parsing + OCR]
-    B --> C[Section-aware chunking]
-    B --> D[LLM relation extraction]
-    D --> E[(Amendment graph)]
-    C --> F[Validity resolver]
-    E --> F
-    F --> G[(PostgreSQL + pgvector)]
+  subgraph LAPTOP["Your machine"]
+    I["asof ingest / temporal / eval"]
   end
-  subgraph Query
-    Q[Question + as-of date] --> U[Query understanding]
-    U --> R[Hybrid search filtered by date]
-    R --> X[Graph expansion]
-    X --> RR[Reranking]
-    RR --> GEN[Grounded answer generation]
-    GEN --> V[Citation verification]
-    V --> OUT[Dated answer + citations]
+  subgraph RENDER["Render (free web service)"]
+    W["FastAPI: web UI + /api/ask"]
   end
-  G --> R
-  E --> X
+  NEON[("Neon PostgreSQL + pgvector<br/>Singapore")]
+  NV["NVIDIA API catalog<br/>LLM + embeddings"]
+  OR["OpenRouter<br/>reranker"]
+  I --> NEON
+  I --> NV
+  W --> NEON
+  W --> NV
+  W --> OR
 ```
 
-1. **Ingestion.** CBIC notifications and circulars are downloaded, parsed (with OCR for scanned
-   PDFs) and split into section-aware chunks such as "rule 36(4)".
-2. **Amendment graph.** An LLM extracts relations between documents (*amends*, *substitutes*,
-   *inserts*, *omits*, *rescinds*, *supersedes*, *clarifies*) with effective dates.
-3. **Validity resolution.** Each chunk gets a validity date range `[valid_from, valid_to)`.
-4. **Query understanding.** The question is parsed for its as-of date (default: today),
-   question type and explicit references such as rule or notification numbers.
-5. **Hybrid temporal retrieval.** Vector search and full-text search run in one SQL query,
-   filtered to text valid on the as-of date, and merged with reciprocal rank fusion.
-6. **Graph expansion and reranking.** Later amendments and clarifying circulars are pulled in,
-   then a cross-encoder reranker orders the candidates.
-7. **Grounded generation and verification.** The LLM answers from numbered sources and quotes
-   them; each quote is checked against its source, and unsupported claims are removed or the
-   system abstains.
+Heavy work (PDF parsing, OCR, bulk embedding, LLM extraction) runs once on your machine; the
+Render service only answers questions, so it fits in 512 MB. All models are free-tier hosted APIs.
 
-The core retrieval query (simplified):
+### Design decisions, briefly
 
-```sql
-SELECT text FROM chunks
-WHERE validity @> DATE '2020-02-15'          -- only text in force on the as-of date
-ORDER BY embedding <=> :query_embedding      -- cosine distance (pgvector)
-LIMIT 20;
-```
+- **Dates are enforced in SQL, not left to the LLM.** If outdated text reaches the model, it
+  often mixes versions. Filtering by validity before generation is what takes the stale-source
+  rate from 28.6 % (baseline) to 0 %.
+- **One database for everything.** Vector search, keyword search, date ranges and the amendment
+  relations live in PostgreSQL, so a single query can ask "relevant **and** in force on this date".
+- **Nothing is trusted without a quote.** Extracted amendments must quote their document and
+  answer citations must quote their source; both are verified in code.
+- **Conservative when unsure.** Overlapping rule versions stay in force together rather than
+  risk dropping the passage that answers the question, and the answer model is told to abstain
+  when the sources do not support an answer.
 
 ## Results: AsOf vs a standard RAG
 
