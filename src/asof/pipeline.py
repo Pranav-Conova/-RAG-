@@ -1,8 +1,12 @@
 """End-to-end question answering: `ask(question, as_of=..., mode=...) -> AskResult`.
 
 mode "asof" (the system):
-    understand -> embed best query -> hybrid_search(as_of, refs) -> rerank top 30 -> top 8
-    -> generate_answer. History questions search everything issued by as_of (no in-force test).
+    understand -> embed best query -> hybrid_search(as_of, refs) -> rerank top 30
+    -> at most 2 chunks per document -> top 8 -> generate_answer.
+    When the question names a rule/section, the amendment text in force on as_of is looked up
+    in `provision_versions` and placed first (see retrieval/provisions.py). History questions
+    search everything issued by as_of (no in-force test), get every version of the named
+    provision, and follow the amendment chain of the notifications found.
 mode "baseline" (naive RAG control group for the evaluation):
     no query understanding, embed the raw question, vector_search top 8 with no date filter,
     no rerank -> the same generate_answer. Its plan uses the caller's as_of if given (only to tell
@@ -28,6 +32,7 @@ from typing import Any, TypeVar
 from asof.config import Settings, get_settings
 from asof.generation.answer import generate_answer
 from asof.models import AskResult, Hit, Mode, QueryPlan
+from asof.retrieval.provisions import chain_hits, merge_hits, provision_hits
 from asof.retrieval.search import hybrid_search, vector_search
 from asof.retrieval.understand import understand
 
@@ -35,6 +40,8 @@ log = logging.getLogger(__name__)
 
 RETRIEVE_K = 30  # candidates fused by hybrid search and sent to the reranker
 FINAL_K = 8  # sources shown to the answer model
+HISTORY_K = 12  # history questions need one source per version
+PER_DOC = 2  # max search chunks from one document (stops one long circular filling the list)
 
 T = TypeVar("T")
 
@@ -160,22 +167,41 @@ def rerank_passage(hit: Hit) -> str:
     return f"{head}\n{hit.text}"
 
 
-def apply_rerank(reranker, question: str, hits: list[Hit], top_n: int) -> list[Hit]:
-    """Reorder by reranker score; on any reranker failure keep retrieval order."""
+def diversify(hits: list[Hit], top_n: int, per_doc: int = PER_DOC) -> list[Hit]:
+    """Keep ranking order but at most `per_doc` hits per document; backfill if short."""
+    out: list[Hit] = []
+    count: dict[int, int] = {}
+    for h in hits:
+        if count.get(h.doc_id, 0) < per_doc:
+            count[h.doc_id] = count.get(h.doc_id, 0) + 1
+            out.append(h)
+    if len(out) < top_n:  # few distinct documents: fill with the best of the rest
+        chosen = {h.chunk_id for h in out}
+        out += [h for h in hits if h.chunk_id not in chosen][: top_n - len(out)]
+        order = {h.chunk_id: i for i, h in enumerate(hits)}
+        out.sort(key=lambda h: order[h.chunk_id])
+    return out[:top_n]
+
+
+def apply_rerank(
+    reranker, question: str, hits: list[Hit], top_n: int, per_doc: int | None = PER_DOC
+) -> list[Hit]:
+    """Reorder by reranker score (at most `per_doc` per document); on failure keep order."""
     if not hits:
         return []
+    want = len(hits) if per_doc else top_n
     try:
-        results = reranker.rerank(question, [rerank_passage(h) for h in hits], top_n=top_n)
+        results = reranker.rerank(question, [rerank_passage(h) for h in hits], top_n=want)
     except Exception as err:  # noqa: BLE001 - degrade, don't fail the query
         log.warning("rerank failed (%s: %s); keeping retrieval order", type(err).__name__, err)
-        return hits[:top_n]
+        return diversify(hits, top_n, per_doc) if per_doc else hits[:top_n]
     out: list[Hit] = []
     seen: set[int] = set()
     for r in results:
         if 0 <= r.index < len(hits) and r.index not in seen:
             seen.add(r.index)
             out.append(hits[r.index].model_copy(update={"score": float(r.score)}))
-    return out[:top_n]
+    return diversify(out, top_n, per_doc) if per_doc else out[:top_n]
 
 
 class _Timer:
@@ -192,6 +218,16 @@ class _Timer:
 
     def total(self) -> dict[str, float]:
         return {**self.timings, "total": round((time.perf_counter() - self._t0) * 1000, 1)}
+
+
+def _structured_hits(conn, plan: QueryPlan, hits: list[Hit], history: bool) -> list[Hit]:
+    """Amendment text for the named provisions; for history, also the notification chain."""
+    found = provision_hits(conn, plan.refs, plan.as_of, history=history)
+    if history:
+        seeds = [h.doc_id for h in hits if h.kind == "notification"][:3]
+        found += chain_hits(conn, seeds, plan.as_of)
+        return found[: HISTORY_K - 4]  # leave room for search results
+    return found
 
 
 # ---------------------------------------------------------------- entry point
@@ -233,12 +269,18 @@ def ask(
         # History questions need superseded versions too: keep issue_date <= as_of but drop the
         # in-force (validity) test. The plan's as_of still frames the answer.
         search_as_of = plan.as_of if settings.asof_date_filter else None
-        in_force = plan.question_type != "history"
+        history = plan.question_type == "history"
         with _connection(settings, conn) as c:
             candidates = timer.step("search", lambda: _guard("database", lambda: hybrid_search(
                 c, vec, fts_text, as_of=search_as_of, refs=plan.refs, k=RETRIEVE_K,
-                in_force=in_force)))
-        hits = timer.step("rerank", lambda: apply_rerank(reranker, question, candidates, FINAL_K))
+                in_force=not history)))
+            hits = timer.step("rerank", lambda: apply_rerank(
+                reranker, question, candidates, HISTORY_K if history else FINAL_K))
+            # Structured lookups need dates, so the no-date-filter ablation skips them.
+            if search_as_of is not None:
+                structured = timer.step("lookup", lambda: _guard("database", lambda: (
+                    _structured_hits(c, plan, hits, history))))
+                hits = merge_hits(structured, hits, HISTORY_K if history else FINAL_K)
     else:
         plan = QueryPlan(
             as_of=as_of or today,

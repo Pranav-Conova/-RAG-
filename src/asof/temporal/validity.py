@@ -284,6 +284,11 @@ def _contains_quote(chunk_norm: str, evidence: str) -> bool:
     return m.size >= min(60, int(0.6 * len(ev)))
 
 
+def text_contains_quote(text: str, evidence: str) -> bool:
+    """Does `text` contain the evidence quote (ignoring case, spacing and punctuation)?"""
+    return _contains_quote(_alnum(text), evidence)
+
+
 def chunk_matches(chunk: ChunkRow, ref: str, evidences: Iterable[str] = ()) -> bool:
     """Is this chunk about provision `ref` (by section_ref, a mention, or the evidence quote)?"""
     if chunk.section_ref:

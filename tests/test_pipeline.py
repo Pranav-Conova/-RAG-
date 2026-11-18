@@ -39,10 +39,18 @@ def row(i: int, text: str = "", valid_to=None):
 
 
 class FakeConn:
-    def __init__(self, rows, fail: Exception | None = None):
+    """Search SQL returns `rows`; the structured lookups (provisions.py) return `lookup`.
+
+    Only search statements are recorded in `sql`/`params`; lookups go to `lookups`.
+    """
+
+    def __init__(self, rows, fail: Exception | None = None, lookup: dict | None = None):
         self.rows, self.fail = rows, fail
+        self.lookup = lookup or {}
         self.sql: list[str] = []
         self.params: list = []
+        self.lookups: list[str] = []
+        self._next: list = []
 
     @contextmanager
     def transaction(self):
@@ -51,12 +59,18 @@ class FakeConn:
     def execute(self, sql, params=None):
         if self.fail:
             raise self.fail
+        for key in ("provision_versions", "FROM chunks WHERE doc_id", "relations r"):
+            if key in sql:
+                self.lookups.append(key)
+                self._next = self.lookup.get(key, [])
+                return self
         self.sql.append(sql)
         self.params.append(params)
+        self._next = self.rows
         return self
 
     def fetchall(self):
-        return self.rows
+        return self._next
 
 
 class FakeEmbedder:
@@ -118,12 +132,14 @@ def test_asof_mode_orchestration(settings, no_limit):
     assert params["as_of"] == date(2020, 2, 29) and params["k"] == 30
     assert params["ref_section"] == ["rule 36(4)", "rule 36(4)(%"]
     assert "validity @>" in conn.sql[-1]
-    assert rr.calls == [("What was the ITC cap under rule 36(4) in February 2020?", 30, 8)]
+    # the reranker scores all 30 so the per-document cap can backfill from the full order
+    assert rr.calls == [("What was the ITC cap under rule 36(4) in February 2020?", 30, 30)]
     assert [h.chunk_id for h in res.hits] == [30, 29, 28, 27, 26, 25, 24, 23]
     assert res.hits[0].score == 29.0  # rerank score replaces the fusion score
     assert res.answer.citations[0].chunk_id == 30 and res.answer.citations[0].verified
-    assert set(res.timings_ms) == {"understand", "embed", "search", "rerank", "generate",
-                                   "total"}
+    assert set(res.timings_ms) == {"understand", "embed", "search", "rerank", "lookup",
+                                   "generate", "total"}
+    assert conn.lookups == ["provision_versions"]  # no versions found: no chunk query
     assert len(bodies) == 2 and bodies[1]["model"] == settings.llm_model
     assert "Answer as of: 2020-02-29" in bodies[1]["messages"][-1]["content"]
 
@@ -260,3 +276,91 @@ def test_history_question_respects_date_filter_ablation(settings, no_limit):
     pipeline.ask("How did rule 36(4) change?", conn=conn, settings=settings, today=TODAY,
                  llm=llm, embedder=FakeEmbedder(), reranker=ReverseReranker())
     assert "%(as_of)s" not in conn.sql[-1]
+
+
+# ---------------------------------------------------------------- structured lookups
+
+AMEND = ('in rule 36, in sub-rule (4), for the figures and words "20 per cent.", the figures and '
+         'words "10 per cent." shall be substituted')
+
+
+def version_row(vid=7, doc_id=99, lo=date(2020, 1, 1), hi=None, text=AMEND):
+    return (vid, "rule 36(4)", text, lo, hi, doc_id, "notification", "75/2019-Central Tax",
+            date(2019, 12, 31), "Amends CGST Rules", None)
+
+
+def test_named_provision_version_comes_first(settings, no_limit):
+    bodies: list[dict] = []
+    llm = scripted_llm(settings, no_limit, [PLAN, answer(1, "10 per cent.")], bodies)
+    chunk = (500, 99, 2, "Notification ... In the said rules, " + AMEND + ". Other rules ...")
+    conn = FakeConn([row(i) for i in range(1, 31)], lookup={
+        "provision_versions": [version_row()], "FROM chunks WHERE doc_id": [chunk]})
+
+    res = pipeline.ask("What was the ITC cap under rule 36(4) in February 2020?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+
+    first = res.hits[0]
+    assert first.chunk_id == 500 and first.number == "75/2019-Central Tax"
+    assert first.text == AMEND  # the amendment wording itself, verbatim in the chunk
+    assert first.section_ref == "rule 36(4) (amendment text)"
+    assert first.valid_from == date(2020, 1, 1) and first.valid_to is None
+    assert len(res.hits) == 8 and [h.chunk_id for h in res.hits[1:]] == list(range(30, 23, -1))
+    assert res.answer.citations[0].verified
+    assert "amendment text" in bodies[1]["messages"][-1]["content"]
+
+
+def test_version_without_locatable_chunk_is_dropped(settings, no_limit):
+    llm = scripted_llm(settings, no_limit, [PLAN, answer(1, "text of chunk 30")], [])
+    conn = FakeConn([row(i) for i in range(1, 31)], lookup={
+        "provision_versions": [version_row()],
+        "FROM chunks WHERE doc_id": [(500, 99, 1, "an unrelated chunk about rule 8")]})
+    res = pipeline.ask("What was the ITC cap under rule 36(4) in February 2020?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+    assert [h.chunk_id for h in res.hits] == list(range(30, 22, -1))
+
+
+def test_date_filter_ablation_skips_lookups(settings, no_limit):
+    settings.asof_date_filter = False
+    llm = scripted_llm(settings, no_limit, [PLAN, answer(1, "text of chunk 30")], [])
+    conn = FakeConn([row(i) for i in range(1, 31)])
+    res = pipeline.ask("What was the ITC cap under rule 36(4) in February 2020?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+    assert conn.lookups == [] and "lookup" not in res.timings_ms
+
+
+def test_one_document_cannot_fill_the_sources(settings, no_limit):
+    llm = scripted_llm(settings, no_limit, [PLAN, answer(1, "text of chunk 30")], [])
+    # chunks 25-30 (the reranker's top 6) all come from one long circular (doc 1000)
+    rows = [r if r[0] < 25 else (r[0], 1000, *r[2:]) for r in (row(i) for i in range(1, 31))]
+    res = pipeline.ask("What was the ITC cap under rule 36(4) in February 2020?",
+                       conn=FakeConn(rows), settings=settings, today=TODAY, llm=llm,
+                       embedder=FakeEmbedder(), reranker=ReverseReranker())
+    assert [h.chunk_id for h in res.hits] == [30, 29, 24, 23, 22, 21, 20, 19]
+
+
+def test_diversify_backfills_when_few_documents():
+    hits = [pipeline.Hit(chunk_id=i, doc_id=1 if i < 5 else 2, kind="circular", number="x",
+                         issue_date=None, title="t", url=None, section_ref=None, page=1,
+                         text="x") for i in range(1, 7)]
+    assert [h.chunk_id for h in pipeline.diversify(hits, 5)] == [1, 2, 3, 5, 6]
+
+
+def test_history_gets_every_version_and_the_notification_chain(settings, no_limit):
+    history_plan = {"question_type": "history",
+                    "search_queries": ["rule 36(4) amendments provisional input tax credit"]}
+    llm = scripted_llm(settings, no_limit, [history_plan, answer(1, "10 per cent.")], [])
+    old = '"(4) Input tax credit ... shall not exceed 20 per cent. of the eligible credit"'
+    v1 = version_row(vid=1, doc_id=98, lo=date(2019, 10, 9), hi=date(2020, 1, 1), text=old)
+    v2 = version_row(vid=2, doc_id=99)
+    chunks = [(400, 98, 1, "in rule 36, after sub-rule (3), " + old), (500, 99, 1, AMEND)]
+    conn = FakeConn([row(i) for i in range(1, 31)], lookup={
+        "provision_versions": [v1, v2], "FROM chunks WHERE doc_id": chunks})
+    res = pipeline.ask("How did the rule 36(4) ITC cap change up to 1 January 2021?", conn=conn,
+                       settings=settings, today=TODAY, llm=llm, embedder=FakeEmbedder(),
+                       reranker=ReverseReranker())
+    assert [h.chunk_id for h in res.hits[:2]] == [400, 500]  # oldest first
+    assert len(res.hits) == pipeline.HISTORY_K
+    assert "relations r" in conn.lookups  # followed the amendment chain too

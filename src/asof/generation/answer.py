@@ -91,7 +91,12 @@ source's text, character for character. Do not paraphrase quotes.
 information is missing. Do not guess.
 5. If a source you rely on was later amended or superseded (its validity ends before today), \
 say so.
-6. Be concise: a direct answer first, then any conditions or exceptions."""
+6. Be concise: a direct answer first, then any conditions or exceptions.
+7. Sources marked "amendment text" are the amending instructions that set a provision's \
+wording, with the dates they apply. When several amend the same provision, each changes only \
+the part it names; where two change the same words, the one with the later "valid" date \
+prevails. Give the resulting wording in force on the as-of date, using the exact figures, \
+dates and phrases from the sources."""
 
 
 def _fmt_date(d: date | None) -> str:

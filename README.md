@@ -88,12 +88,14 @@ flowchart TB
     direction LR
     Q["Question<br/>+ optional date"] --> U["1 Understand<br/>date, rule refs, type"]
     U --> S["2-3 Hybrid search<br/>in force on that date"]
-    S --> R["4 Rerank<br/>30 to 8 passages"]
-    R --> G["5 Generate answer<br/>numbered citations"]
-    G --> V["6 Verify every quote"]
+    S --> R["4 Rerank<br/>30 to 8, max 2 per document"]
+    R --> L["5 Look up the named rule's<br/>version in force on that date"]
+    L --> G["6 Generate answer<br/>numbered citations"]
+    G --> V["7 Verify every quote"]
     V --> O["Dated answer<br/>+ checked sources"]
   end
   DB --> S
+  DB --> L
 ```
 
 ### Part 1: building the knowledge base (offline)
@@ -135,14 +137,15 @@ Result for rule 36(4), straight from the database:
 | **1. Understand** | Finds the **as-of date** (the date picker wins; else a date in the question such as "February 2020" → 2020-02-29; else today), explicit **references** (`rule 36(4)`, `49/2019-Central Tax`, circular numbers) and the **question type** (point-in-time, current, history). Dates after "issued/notified on" are ignored. The LLM writes 1–3 search queries; if it fails, a regex-only plan is used. | `retrieval/understand.py` |
 | **2. Embed** | The best search query is embedded in "query" mode. | `providers/embeddings.py` |
 | **3. Hybrid search** | **One SQL query** gathers three candidate lists of 50: vector similarity (pgvector cosine), keyword match (PostgreSQL full-text) and chunks matching the question's references (`section_ref`, `refs`, document number). They are merged with **reciprocal rank fusion** (k = 60, plus a small boost for reference matches). The **date filter** keeps only chunks whose validity contains the as-of date and whose document was already issued; history questions skip the validity filter but keep the issue-date rule. Returns the top 30. | `retrieval/search.py` |
-| **4. Rerank** | A cross-encoder (`nvidia/nemotron-3.5-rerank-8b` via OpenRouter) rescores the 30 candidates against the question and the best 8 are kept. If OpenRouter fails or its free daily limit is reached, the LLM scores them instead. | `providers/rerank.py` |
-| **5. Generate** | The LLM (`nvidia/nemotron-3.5-super`) gets the 8 passages as numbered sources `[S1]…[S8]`, each with its document number, issue date, validity range and section. It must answer only from them, state the as-of date, cite each claim with `[S#]` plus a short verbatim quote, mention later amendments, or abstain if the sources do not answer. Output is JSON; malformed JSON is repaired and cut-off output is retried with a bigger budget. | `generation/answer.py` |
-| **6. Verify quotes** | Every quote is checked against its source: an exact match on word boundaries after normalising case, spacing and quote marks, or a fuzzy match (≥ 85 %, quotes of 20+ characters) in which **all numbers must line up in order** and no negation (*not, except, omitted…*) may differ. Unverified quotes are flagged in the API and UI. | `generation/answer.py` |
-| **7. Return** | `AskResult`: the interpreted plan, the 8 sources with validity ranges, the answer, each citation with `verified: true/false`, and per-step timings. | `pipeline.py`, `api/main.py` |
+| **4. Rerank** | A cross-encoder (`nvidia/nemotron-3.5-rerank-8b` via OpenRouter) rescores the 30 candidates against the question and the best 8 are kept, **at most 2 per document** so one long circular cannot crowd out the notification that actually changed the rule. If OpenRouter fails or its free daily limit is reached, the LLM scores them instead. | `providers/rerank.py`, `pipeline.py` |
+| **5. Look up the rule's version** | Search finds passages that *talk about* a rule; this step fetches the text that *set its wording* on the date. For each rule/section named in the question, the version(s) in force on the as-of date are read straight from `provision_versions` (built in Part 1) and placed first, as the verbatim amendment wording with its validity dates (marked "amendment text"). Overlapping versions (main text + later provisos) all come back. History questions get **every** version in date order, plus the chain of notifications that amend the same base notification (e.g. e-invoicing: 13/2020 amended by 88/2020, 5/2021, 1/2022, 17/2022). | `retrieval/provisions.py` |
+| **6. Generate** | The LLM (`nvidia/nemotron-3.5-super`) gets the 8 passages (12 for history questions) as numbered sources `[S1]…[S8]`, each with its document number, issue date, validity range and section. It must answer only from them, state the as-of date, cite each claim with `[S#]` plus a short verbatim quote, mention later amendments, or abstain if the sources do not answer. When several amendments to one rule are in force, it is told that each changes only the part it names and that the later one wins where they change the same words. Output is JSON; malformed JSON is repaired and cut-off output is retried with a bigger budget. | `generation/answer.py` |
+| **7. Verify quotes** | Every quote is checked against its source: an exact match on word boundaries after normalising case, spacing and quote marks, or a fuzzy match (≥ 85 %, quotes of 20+ characters) in which **all numbers must line up in order** and no negation (*not, except, omitted…*) may differ. Unverified quotes are flagged in the API and UI. | `generation/answer.py` |
+| **8. Return** | `AskResult`: the interpreted plan, the sources with validity ranges, the answer, each citation with `verified: true/false`, and per-step timings. | `pipeline.py`, `api/main.py` |
 
 **The baseline ("standard RAG") used for comparison** uses the same corpus, embeddings, LLM and
-answer prompt, but: no query understanding, vector search only (top 8), **no date filter** and no
-reranking. Switch to it with `mode: "baseline"` or the *Compare* toggle in the UI.
+answer prompt, but: no query understanding, vector search only (top 8), **no date filter**, no
+reranking and no rule-version lookup. Switch to it with `mode: "baseline"` or the *Compare* toggle in the UI.
 
 The date filter at the heart of it (simplified from `retrieval/search.py`):
 
